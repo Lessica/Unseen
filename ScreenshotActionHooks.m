@@ -1,5 +1,5 @@
-#import "ProcessFilter.h"
 #import "ScreenshotActionHooks.h"
+#import "ProcessFilter.h"
 #import "dobby.h"
 
 #import <Foundation/Foundation.h>
@@ -21,9 +21,6 @@ static os_log_t screenshot_log(void) {
 typedef void (*ActionDispatchIMP)(id self, SEL _cmd, id actions);
 
 static ActionDispatchIMP orig_FBScene_sendActions;
-static ActionDispatchIMP orig_FBSScene_sendActions;
-static ActionDispatchIMP orig_FBSSceneImpl_sendActions;
-static ActionDispatchIMP orig_FBScene__sendActions;
 
 static BOOL object_responds_to(id object, SEL selector) {
     return object && selector && [object respondsToSelector:selector];
@@ -149,18 +146,6 @@ static void repl_FBScene_sendActions(id self, SEL _cmd, id actions) {
     handle_action_dispatch(self, _cmd, actions, orig_FBScene_sendActions);
 }
 
-static void repl_FBSScene_sendActions(id self, SEL _cmd, id actions) {
-    handle_action_dispatch(self, _cmd, actions, orig_FBSScene_sendActions);
-}
-
-static void repl_FBSSceneImpl_sendActions(id self, SEL _cmd, id actions) {
-    handle_action_dispatch(self, _cmd, actions, orig_FBSSceneImpl_sendActions);
-}
-
-static void repl_FBScene__sendActions(id self, SEL _cmd, id actions) {
-    handle_action_dispatch(self, _cmd, actions, orig_FBScene__sendActions);
-}
-
 static BOOL dbl_hook_method(const char *className, const char *selectorName, void *replacement, void **original) {
     Class cls = objc_getClass(className);
     if (!cls) {
@@ -190,18 +175,6 @@ void install_screenshot_action_hooks(void) {
 
     if (dbl_hook_method("FBScene", "sendActions:", (void *)repl_FBScene_sendActions,
                         (void **)&orig_FBScene_sendActions)) {
-        installed++;
-    }
-    if (dbl_hook_method("FBSScene", "sendActions:", (void *)repl_FBSScene_sendActions,
-                        (void **)&orig_FBSScene_sendActions)) {
-        installed++;
-    }
-    if (dbl_hook_method("FBSSceneImpl", "sendActions:", (void *)repl_FBSSceneImpl_sendActions,
-                        (void **)&orig_FBSSceneImpl_sendActions)) {
-        installed++;
-    }
-    if (dbl_hook_method("FBScene", "_sendActions:", (void *)repl_FBScene__sendActions,
-                        (void **)&orig_FBScene__sendActions)) {
         installed++;
     }
 
