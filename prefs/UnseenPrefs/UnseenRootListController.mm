@@ -119,4 +119,24 @@ NS_INLINE void UnseenRestartProcesses(NSSet<NSString *> *processNames) {
     }
 }
 
+#pragma mark - UITableViewDataSource & UITableViewDelegate
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    PSSpecifier *specifier = [self specifierAtIndexPath:indexPath];
+    NSString *cellType = [specifier propertyForKey:@"cell"];
+    if ([cellType isEqualToString:@"PSButtonCell"]) {
+        UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
+
+        BOOL isDestructive =
+            ([specifier propertyForKey:@"isDestructive"] && [[specifier propertyForKey:@"isDestructive"] boolValue]);
+        if (isDestructive) {
+            cell.textLabel.textColor = [UIColor systemRedColor];
+            cell.textLabel.highlightedTextColor = [UIColor systemRedColor];
+        }
+        return cell;
+    }
+
+    return [super tableView:tableView cellForRowAtIndexPath:indexPath];
+}
+
 @end

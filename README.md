@@ -2,7 +2,11 @@
 
 Unseen 是一个 iOS tweak，用于降低普通 App 对截图、录屏和隐藏图层标记的感知与干扰。
 
+在 iOS 16.7/18.6 上测试通过，支持 arm64/arm64e 设备。
+
 Unseen is an iOS tweak that reduces ordinary apps' ability to detect or interfere with screenshots, screen recordings, and hidden layer flags.
+
+Tested on iOS 16.7/18.6, supports arm64/arm64e devices.
 
 ## 功能选项
 

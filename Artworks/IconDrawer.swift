@@ -10,18 +10,13 @@ import SwiftUI
 
 let previewSize = CGSize(width: 1024, height: 1024)
 let symbolWidth: CGFloat = 650
+let iconCornerRadius: CGFloat = 1024 * 0.2237
 
 struct AppIconView: View {
     var body: some View {
-        Image(systemName: "eyebrow")
-            .resizable()
-            .aspectRatio(contentMode: .fit)
-            .frame(width: symbolWidth, height: symbolWidth)
-            .font(.system(size: symbolWidth, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white)
-            .opacity(0.9)
-            .frame(width: previewSize.width, height: previewSize.height, alignment: .center)
-            .background {
+        ZStack {
+            RoundedRectangle(cornerRadius: iconCornerRadius, style: .continuous)
+                .fill(
                 LinearGradient(
                     gradient: Gradient(colors: [
                         // #9b1b3f, #ff7a59
@@ -31,8 +26,17 @@ struct AppIconView: View {
                     startPoint: .top,
                     endPoint: .bottom
                 )
-            }
-            .clipped()
+            )
+
+            Image(systemName: "eyebrow")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: symbolWidth, height: symbolWidth)
+                .font(.system(size: symbolWidth, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .opacity(0.9)
+        }
+        .frame(width: previewSize.width, height: previewSize.height, alignment: .center)
     }
 }
 
