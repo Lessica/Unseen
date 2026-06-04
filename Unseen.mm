@@ -158,7 +158,7 @@ static bool client_is_target_audit_token(audit_token_t token, pid_t *pidOut, cha
 
 static inline int is_tst_xn_disableUpdateMask(uint32_t insn) {
     uint32_t masked = insn & 0xFFFFFC1F;
-    return masked == 0xF26C181F || masked == 0xF26C1C1F;
+    return masked == 0xF26C141F || masked == 0xF26C181F || masked == 0xF26C1C1F;
 }
 
 static inline int is_b_ne(uint32_t insn) { return (insn & 0xFF00001F) == 0x54000001; }

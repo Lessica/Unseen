@@ -1,5 +1,5 @@
 ARCHS := arm64 arm64e
-TARGET := iphone:clang:16.5:14.0
+TARGET := iphone:clang:16.5:15.0
 
 INSTALL_TARGET_PROCESSES := Preferences
 
