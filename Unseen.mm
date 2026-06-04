@@ -163,6 +163,38 @@ static inline int is_tst_xn_disableUpdateMask(uint32_t insn) {
 
 static inline int is_b_ne(uint32_t insn) { return (insn & 0xFF00001F) == 0x54000001; }
 
+static inline void *decode_bl_target(const uint32_t *insn_addr) {
+    uint32_t insn = *insn_addr;
+    if ((insn & 0xFC000000) != 0x94000000) {
+        return NULL;
+    }
+
+    int32_t imm26 = (int32_t)(insn & 0x03FFFFFF);
+    if (imm26 & 0x02000000) {
+        imm26 |= (int32_t)0xFC000000;
+    }
+
+    return (void *)((uintptr_t)insn_addr + (((intptr_t)imm26) << 2));
+}
+
+static inline int is_tbnz_w0_bit0(uint32_t insn) { return (insn & 0xFFF8001F) == 0x37000000; }
+
+static inline int decode_unsigned_store_64(uint32_t insn, uint8_t *rt, uint8_t *rn, uint32_t *offset) {
+    if ((insn & 0xFFC00000) != 0xF9000000) {
+        return 0;
+    }
+    if (rt) {
+        *rt = insn & 0x1F;
+    }
+    if (rn) {
+        *rn = (insn >> 5) & 0x1F;
+    }
+    if (offset) {
+        *offset = ((insn >> 10) & 0xFFF) << 3;
+    }
+    return 1;
+}
+
 static inline int decode_unsigned_load_32(uint32_t insn, uint8_t *rt, uint8_t *rn, uint32_t *offset) {
     if ((insn & 0xFFC00000) != 0xB9400000) {
         return 0;
@@ -240,6 +272,18 @@ static void *resolve_prepare_layer0(void) {
 
     os_log_error(patchfinder_log(), "Could not resolve prepare_layer0 symbol");
     return NULL;
+}
+
+static void *resolve_allowed_in_update(void) {
+    const char *image = "/System/Library/Frameworks/QuartzCore.framework/QuartzCore";
+    const char *symbol = "__ZN2CA6Render6Update17allowed_in_updateEPNS0_7ContextEPKNS0_5LayerE";
+    void *sym = DobbySymbolResolver(image, symbol);
+    if (sym) {
+        os_log(patchfinder_log(), "Resolved allowed_in_update via DobbySymbolResolver: %p", sym);
+    } else {
+        os_log_error(patchfinder_log(), "Could not resolve allowed_in_update symbol");
+    }
+    return sym;
 }
 
 static void *resolve_get_display_info(void) {
@@ -321,6 +365,40 @@ static void *find_disableUpdateMask_branch(void) {
         }
     }
 
+    void *allowed_in_update = resolve_allowed_in_update();
+    if (allowed_in_update) {
+        for (size_t i = 0; i + 8 < count; i++) {
+            void *target = decode_bl_target(&insns[i]);
+            if (target != allowed_in_update) {
+                continue;
+            }
+
+            os_log_info(patchfinder_log(), "Found allowed_in_update call at %p", (void *)&insns[i]);
+            for (size_t j = 1; j <= 4 && (i + j + 1) < count; j++) {
+                if (!is_tbnz_w0_bit0(insns[i + j])) {
+                    continue;
+                }
+
+                for (size_t k = j + 1; k <= j + 3 && (i + k) < count; k++) {
+                    uint8_t storeRt = 0;
+                    uint8_t storeRn = 0;
+                    uint32_t storeOffset = 0;
+                    if (!decode_unsigned_store_64(insns[i + k], &storeRt, &storeRn, &storeOffset) || storeRt != 31) {
+                        continue;
+                    }
+
+                    void *store_addr = (void *)&insns[i + k];
+                    os_log(patchfinder_log(),
+                           "Found iOS 18 allowed_in_update clear store at %p (base X%u + 0x%X, offset +%zu from call)",
+                           store_addr, storeRn, storeOffset, k);
+                    return store_addr;
+                }
+
+                os_log_error(patchfinder_log(), "allowed_in_update TBNZ found but no nearby STR XZR clear");
+            }
+        }
+    }
+
     os_log_error(patchfinder_log(), "Pattern not found in prepare_layer0 (%zu instructions scanned)", count);
     return NULL;
 }
@@ -342,7 +420,7 @@ static void install_disableUpdateMask_patch(void) {
     uint32_t nop = 0xD503201F;
     int ret = DobbyCodePatch(branch_addr, (uint8_t *)&nop, sizeof(nop));
     if (ret == 0) {
-        os_log(tweak_log(), "Successfully patched B.NE at %p -> NOP", branch_addr);
+        os_log(tweak_log(), "Successfully patched disableUpdateMask instruction at %p -> NOP", branch_addr);
     } else {
         os_log_error(tweak_log(), "DobbyCodePatch failed at %p (ret=%d)", branch_addr, ret);
     }
@@ -578,11 +656,8 @@ static uint64_t repl_get_display_info(void *server, void *object, uint8_t *info,
     }
 
     uint32_t *flags = (uint32_t *)(info + offset);
-    uint32_t originalFlags = *flags;
     BOOL hadClonedBit = ((*flags & 0x4) != 0);
     *flags &= ~0x4U;
-    os_log(capture_log(), "get_display_info called by target client, original flags=0x%X, modified flags=0x%X",
-           originalFlags, *flags);
 
     if (hadClonedBit && atomic_fetch_add(&gMaskedLogCount, 1) < 20) {
         os_log(capture_log(), "Cleared cloned bit in get_display_info output");
