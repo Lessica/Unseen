@@ -1,0 +1,23 @@
+"Enable Unseen" = "Enable Unseen";
+
+"Hide Recording State" = "Hide Recording State";
+
+"Hide Screenshot Events" = "Hide Screenshot Events";
+
+"Made with ♥ by OwnGoal Studio" = "Made with ♥ by OwnGoal Studio";
+
+"Please support our paid works, thank you!" = "Please support our paid works, thank you!";
+
+"Restart Rendering Services" = "Restart Rendering Services";
+
+"Restart backboardd and SpringBoard to reload rendering-related settings immediately." = "Restart backboardd and SpringBoard to reload rendering-related settings immediately.";
+
+"Reveal Hidden Content" = "Reveal Hidden Content";
+
+"When disabled, Unseen will not handle hidden content, screenshot notices, or screen recording state. Restart rendering services after changing these settings." = "When disabled, Unseen will not handle hidden content, screenshot notices, or screen recording state. Restart rendering services after changing these settings.";
+
+"When enabled, apps can usually no longer learn that the screen is being recorded or mirrored through the system capture-state notification." = "When enabled, apps can usually no longer learn that the screen is being recorded or mirrored through the system capture-state notification.";
+
+"When enabled, apps can usually no longer learn when you take a screenshot through the system screenshot notification." = "When enabled, apps can usually no longer learn when you take a screenshot through the system screenshot notification.";
+
+"When enabled, screenshots and recordings can show ordinary app content that was hidden with private layer flags. This does not bypass DRM or system copyright protections." = "When enabled, screenshots and recordings can show ordinary app content that was hidden with private layer flags. This does not bypass DRM or system copyright protections.";

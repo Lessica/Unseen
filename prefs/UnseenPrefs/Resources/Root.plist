@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+	<dict>
+		<key>title</key>
+		<string>Unseen</string>
+		<key>items</key>
+		<array>
+			<dict>
+				<key>cell</key>
+				<string>PSGroupCell</string>
+				<key>label</key>
+				<string></string>
+				<key>footerText</key>
+				<string>When disabled, Unseen will not handle hidden content, screenshot notices, or screen recording state. Restart rendering services after changing these settings.</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSSwitchCell</string>
+				<key>default</key>
+				<true/>
+				<key>defaults</key>
+				<string>com.82flex.unseen</string>
+				<key>key</key>
+				<string>Enabled</string>
+				<key>label</key>
+				<string>Enable Unseen</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSGroupCell</string>
+				<key>label</key>
+				<string></string>
+				<key>footerText</key>
+				<string>When enabled, screenshots and recordings can show ordinary app content that was hidden with private layer flags. This does not bypass DRM or system copyright protections.</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSSwitchCell</string>
+				<key>default</key>
+				<true/>
+				<key>defaults</key>
+				<string>com.82flex.unseen</string>
+				<key>key</key>
+				<string>DisableUpdateMaskPatchEnabled</string>
+				<key>label</key>
+				<string>Reveal Hidden Content</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSGroupCell</string>
+				<key>label</key>
+				<string></string>
+				<key>footerText</key>
+				<string>When enabled, apps can usually no longer learn when you take a screenshot through the system screenshot notification.</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSSwitchCell</string>
+				<key>default</key>
+				<true/>
+				<key>defaults</key>
+				<string>com.82flex.unseen</string>
+				<key>key</key>
+				<string>ScreenshotActionFilterEnabled</string>
+				<key>label</key>
+				<string>Hide Screenshot Events</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSGroupCell</string>
+				<key>label</key>
+				<string></string>
+				<key>footerText</key>
+				<string>When enabled, apps can usually no longer learn that the screen is being recorded or mirrored through the system capture-state notification.</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSSwitchCell</string>
+				<key>default</key>
+				<true/>
+				<key>defaults</key>
+				<string>com.82flex.unseen</string>
+				<key>key</key>
+				<string>CaptureStateMaskEnabled</string>
+				<key>label</key>
+				<string>Hide Recording State</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSGroupCell</string>
+				<key>label</key>
+				<string></string>
+				<key>footerText</key>
+				<string>Restart backboardd and SpringBoard to reload rendering-related settings immediately.</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSButtonCell</string>
+				<key>action</key>
+				<string>restartRenderServices</string>
+				<key>isDestructive</key>
+				<true/>
+				<key>label</key>
+				<string>Restart Rendering Services</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSGroupCell</string>
+				<key>label</key>
+				<string></string>
+				<key>footerText</key>
+				<string>Please support our paid works, thank you!</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSButtonCell</string>
+				<key>action</key>
+				<string>support</string>
+				<key>label</key>
+				<string>Made with ♥ by OwnGoal Studio</string>
+			</dict>
+		</array>
+	</dict>
+</plist>

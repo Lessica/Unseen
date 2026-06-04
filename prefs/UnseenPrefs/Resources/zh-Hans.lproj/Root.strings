@@ -1,0 +1,23 @@
+"Enable Unseen" = "启用 Unseen";
+
+"Hide Recording State" = "隐藏录屏状态";
+
+"Hide Screenshot Events" = "隐藏截图行为";
+
+"Made with ♥ by OwnGoal Studio" = "「乌龙工作室」倾情献制";
+
+"Please support our paid works, thank you!" = "请支持我们的付费作品，谢谢！";
+
+"Restart Rendering Services" = "重启渲染服务";
+
+"Restart backboardd and SpringBoard to reload rendering-related settings immediately." = "重启 backboardd 和 SpringBoard，让渲染相关设置立即重新载入。";
+
+"Reveal Hidden Content" = "显示被隐藏的画面";
+
+"When disabled, Unseen will not handle hidden content, screenshot notices, or screen recording state. Restart rendering services after changing these settings." = "关闭后，Unseen 不会处理隐藏画面、截图通知和录屏状态。更改设置后请重启渲染服务使其生效。";
+
+"When enabled, apps can usually no longer learn that the screen is being recorded or mirrored through the system capture-state notification." = "开启后，App 通常无法再通过系统录屏状态通知得知屏幕正在被录制或投放。";
+
+"When enabled, apps can usually no longer learn when you take a screenshot through the system screenshot notification." = "开启后，App 通常无法再通过系统截图通知得知你何时截屏。";
+
+"When enabled, screenshots and recordings can show ordinary app content that was hidden with private layer flags. This does not bypass DRM or system copyright protections." = "开启后，截图和录屏会尽量显示 App 通过私有接口标记为隐藏的普通画面；此功能不会绕过 DRM 或系统版权保护。";
