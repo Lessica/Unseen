@@ -8,6 +8,10 @@ Unseen is an iOS tweak that reduces ordinary apps' ability to detect or interfer
 
 Tested on iOS 16.7/18.6, supports arm64/arm64e devices.
 
+## Demo
+
+https://github.com/user-attachments/assets/4bb391eb-1f1e-4aaf-a133-06730d060858
+
 ## 功能选项
 
 - **启用 Unseen**：总开关。关闭后，Unseen 不会处理隐藏画面、截图通知或录屏状态。
