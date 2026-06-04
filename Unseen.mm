@@ -13,6 +13,7 @@
 #import <stdint.h>
 #import <stdlib.h>
 #import <string.h>
+#import <substrate.h>
 #import <sys/types.h>
 #import <unistd.h>
 
@@ -482,23 +483,15 @@ static BOOL hook_method(const char *className, const char *selectorName, void *r
     if (!cls) {
         return NO;
     }
+
     SEL selector = sel_registerName(selectorName);
-    Method method = class_getInstanceMethod(cls, selector);
-    if (!method) {
-        return NO;
-    }
-    IMP imp = method_getImplementation(method);
-    if (!imp) {
+    if (!selector) {
         return NO;
     }
 
-    int ret = DobbyHook((void *)imp, replacement, (dobby_dummy_func_t *)original);
-    if (ret == 0) {
-        os_log(screenshot_log(), "Installed hook %{public}s -%{public}s", className, selectorName);
-        return YES;
-    }
-    os_log_error(screenshot_log(), "Failed hook %{public}s -%{public}s ret=%d", className, selectorName, ret);
-    return NO;
+    MSHookMessageEx(cls, selector, (IMP)replacement, (IMP *)original);
+    os_log(screenshot_log(), "Installed hook %{public}s -%{public}s", className, selectorName);
+    return YES;
 }
 
 static void install_screenshot_action_hooks(void) {
@@ -508,11 +501,9 @@ static void install_screenshot_action_hooks(void) {
     }
 
     unsigned installed = 0;
-
     if (hook_method("FBScene", "sendActions:", (void *)repl_FBScene_sendActions, (void **)&orig_FBScene_sendActions)) {
         installed++;
     }
-
     if (installed == 0) {
         os_log_error(screenshot_log(), "No screenshot action dispatch hooks installed");
     }
