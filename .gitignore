@@ -1,5 +1,6 @@
 .cache
 .claude
+.codex
 .theos
 packages
 compile_commands.json
