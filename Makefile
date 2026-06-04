@@ -4,14 +4,14 @@ INSTALL_TARGET_PROCESSES := backboardd SpringBoard
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME += LayerPropResearch
+TWEAK_NAME += Unseen
 
-LayerPropResearch_FILES += LayerPropResearch.mm
-LayerPropResearch_CFLAGS += -fobjc-arc
-LayerPropResearch_CFLAGS += -I$(THEOS_PROJECT_DIR)/include
-LayerPropResearch_LDFLAGS += -L$(THEOS_PROJECT_DIR)/lib
-LayerPropResearch_LIBRARIES += dobby
-LayerPropResearch_FRAMEWORKS += Foundation
-LayerPropResearch_FRAMEWORKS += CoreFoundation
+Unseen_FILES += Unseen.mm
+Unseen_CFLAGS += -fobjc-arc
+Unseen_CFLAGS += -I$(THEOS_PROJECT_DIR)/include
+Unseen_LDFLAGS += -L$(THEOS_PROJECT_DIR)/lib
+Unseen_LIBRARIES += dobby
+Unseen_FRAMEWORKS += Foundation
+Unseen_FRAMEWORKS += CoreFoundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk

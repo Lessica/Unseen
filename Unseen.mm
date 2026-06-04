@@ -16,9 +16,9 @@
 #import <sys/types.h>
 #import <unistd.h>
 
-extern "C" bool gLayerPropResearchDisableUpdateMaskPatchEnabled = true;
-extern "C" bool gLayerPropResearchScreenshotActionFilterEnabled = true;
-extern "C" bool gLayerPropResearchCaptureStateMaskEnabled = true;
+extern "C" bool gUnseenDisableUpdateMaskPatchEnabled = true;
+extern "C" bool gUnseenScreenshotActionFilterEnabled = true;
+extern "C" bool gUnseenCaptureStateMaskEnabled = true;
 
 #pragma mark - Logging
 
@@ -26,7 +26,7 @@ static os_log_t tweak_log(void) {
     static os_log_t log;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        log = os_log_create("com.82flex.layerpropresearch", "tweak");
+        log = os_log_create("com.82flex.unseen", "tweak");
     });
     return log;
 }
@@ -35,7 +35,7 @@ static os_log_t patchfinder_log(void) {
     static os_log_t log;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        log = os_log_create("com.82flex.layerpropresearch", "patchfinder");
+        log = os_log_create("com.82flex.unseen", "patchfinder");
     });
     return log;
 }
@@ -44,7 +44,7 @@ static os_log_t screenshot_log(void) {
     static os_log_t log;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        log = os_log_create("com.82flex.layerpropresearch", "screenshot-actions");
+        log = os_log_create("com.82flex.unseen", "screenshot-actions");
     });
     return log;
 }
@@ -53,7 +53,7 @@ static os_log_t capture_log(void) {
     static os_log_t log;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        log = os_log_create("com.82flex.layerpropresearch", "capture-state");
+        log = os_log_create("com.82flex.unseen", "capture-state");
     });
     return log;
 }
@@ -283,7 +283,7 @@ static void *find_disableUpdateMask_branch(void) {
 #pragma mark - Disable Update Mask Patch
 
 static void install_disableUpdateMask_patch(void) {
-    if (!gLayerPropResearchDisableUpdateMaskPatchEnabled) {
+    if (!gUnseenDisableUpdateMaskPatchEnabled) {
         os_log(tweak_log(), "disableUpdateMask patch disabled");
         return;
     }
@@ -458,7 +458,7 @@ static BOOL hook_method(const char *className, const char *selectorName, void *r
 }
 
 static void install_screenshot_action_hooks(void) {
-    if (!gLayerPropResearchScreenshotActionFilterEnabled) {
+    if (!gUnseenScreenshotActionFilterEnabled) {
         os_log(screenshot_log(), "Screenshot action filter disabled");
         return;
     }
@@ -573,7 +573,7 @@ static BOOL install_hook_symbol(const char *image, const char *symbolName, void 
 }
 
 static void install_capture_state_hooks(void) {
-    if (!gLayerPropResearchCaptureStateMaskEnabled) {
+    if (!gUnseenCaptureStateMaskEnabled) {
         os_log(capture_log(), "Capture state mask disabled");
         return;
     }
@@ -594,7 +594,7 @@ static void install_capture_state_hooks(void) {
 #pragma mark - Entry Point
 
 __attribute__((constructor)) static void tweak_init(void) {
-    os_log(tweak_log(), "LayerPropResearch loading in %{public}s (pid %d)", getprogname(), getpid());
+    os_log(tweak_log(), "Unseen loading in %{public}s (pid %d)", getprogname(), getpid());
 
     const char *process = getprogname();
     if (process && strcmp(process, "SpringBoard") == 0) {
