@@ -1,0 +1,185 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [release]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [release]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag to create or update. Defaults to v<control version>.'
+        required: false
+        type: string
+      draft:
+        description: 'Create the release as a draft.'
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: 'Mark the release as a prerelease.'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  FINALPACKAGE: 1
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+  THEOS: ${{ github.workspace }}/theos
+
+jobs:
+  build:
+    name: Build ${{ matrix.build_variant }}
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build_variant: legacy
+            package_scheme: ''
+            description: Traditional rootful jailbreaks
+          - build_variant: rootless
+            package_scheme: rootless
+            description: Rootless jailbreaks
+          - build_variant: roothide
+            package_scheme: roothide
+            description: RootHide-based jailbreaks
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Xcode 16.2
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.2'
+
+      - name: Install dependencies
+        run: |
+          brew install coreutils dpkg ldid-procursus make p7zip
+
+      - name: Checkout roothide theos
+        uses: actions/checkout@v4
+        with:
+          repository: roothide/theos
+          path: theos
+          submodules: recursive
+
+      - name: Set up Theos environment
+        run: |
+          echo "$THEOS/bin" >> "$GITHUB_PATH"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+
+      - name: Install iOS SDK
+        run: |
+          cd "$THEOS"
+          ./bin/install-sdk iPhoneOS16.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build package
+        run: |
+          if [ -n "${{ matrix.package_scheme }}" ]; then
+            export THEOS_PACKAGE_SCHEME="${{ matrix.package_scheme }}"
+            echo "Building ${{ matrix.build_variant }} with THEOS_PACKAGE_SCHEME=$THEOS_PACKAGE_SCHEME"
+          else
+            unset THEOS_PACKAGE_SCHEME
+            echo "Building legacy package without THEOS_PACKAGE_SCHEME"
+          fi
+
+          gmake clean package FINALPACKAGE=1
+
+      - name: Collect package
+        run: |
+          mkdir -p dist
+          for package in packages/*.deb; do
+            base="$(basename "$package" .deb)"
+            cp "$package" "dist/${base}-${{ matrix.build_variant }}.deb"
+          done
+
+      - name: Upload dSYM symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsym-symbols-${{ matrix.build_variant }}
+          path: .theos/obj
+          if-no-files-found: warn
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.build_variant }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    name: Publish Release
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/release' }}
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract version information
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          VERSION="$(awk -F': ' '/^Version:/{print $2; exit}' control)"
+          if [ -z "$VERSION" ]; then
+            echo "Version not found in control"
+            exit 1
+          fi
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_TAG_NAME" ]; then
+            TAG_NAME="$INPUT_TAG_NAME"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            TAG_NAME="$REF_NAME"
+          else
+            TAG_NAME="v$VERSION"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          path: release-packages
+          merge-multiple: true
+
+      - name: List release packages
+        run: |
+          find release-packages -type f -name '*.deb' -print | sort
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag_name }}
+          name: Unseen ${{ steps.version.outputs.tag_name }}
+          files: release-packages/*.deb
+          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
+          body: |
+            ## Unseen ${{ steps.version.outputs.version }}
+
+            This release includes parallel builds for the supported jailbreak layouts:
+
+            - **Legacy**: Traditional rootful jailbreaks
+            - **Rootless**: Rootless jailbreaks
+            - **RootHide**: RootHide-based jailbreaks
+
+            Built with Xcode 16.2 and [roothide/theos](https://github.com/roothide/theos).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
