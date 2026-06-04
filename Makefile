@@ -14,4 +14,7 @@ Unseen_LIBRARIES += dobby
 Unseen_FRAMEWORKS += Foundation
 Unseen_FRAMEWORKS += CoreFoundation
 
+SUBPROJECTS += prefs
+
 include $(THEOS_MAKE_PATH)/tweak.mk
+include $(THEOS_MAKE_PATH)/aggregate.mk

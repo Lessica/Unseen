@@ -6,4 +6,4 @@ Description: Neutralizes CALayer disableUpdateMask in the render server
 Maintainer: 82flex
 Author: 82flex
 Section: Tweaks
-Depends: firmware (>= 14.0)
+Depends: firmware (>= 14.0), preferenceloader

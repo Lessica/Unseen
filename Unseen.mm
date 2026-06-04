@@ -16,6 +16,7 @@
 #import <sys/types.h>
 #import <unistd.h>
 
+extern "C" bool gUnseenEnabled = true;
 extern "C" bool gUnseenDisableUpdateMaskPatchEnabled = true;
 extern "C" bool gUnseenScreenshotActionFilterEnabled = true;
 extern "C" bool gUnseenCaptureStateMaskEnabled = true;
@@ -56,6 +57,49 @@ static os_log_t capture_log(void) {
         log = os_log_create("com.82flex.unseen", "capture-state");
     });
     return log;
+}
+
+#pragma mark - Preferences
+
+static NSString *const kUnseenPreferencesDomain = @"com.82flex.unseen";
+
+static NSDictionary *load_preferences_dictionary(void) {
+    NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:kUnseenPreferencesDomain];
+    if (prefs) {
+        return prefs;
+    }
+
+    NSString *plistPath = @"/var/mobile/Library/Preferences/com.82flex.unseen.plist";
+    prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    if (prefs) {
+        os_log(tweak_log(), "Loaded preferences from %{public}s", plistPath.UTF8String);
+    }
+    return prefs;
+}
+
+static BOOL bool_preference(NSDictionary *prefs, NSString *key, BOOL defaultValue) {
+    id value = [prefs objectForKey:key];
+    if ([value isKindOfClass:[NSNumber class]]) {
+        return [value boolValue];
+    }
+    if ([value isKindOfClass:[NSString class]]) {
+        return [(NSString *)value boolValue];
+    }
+    return defaultValue;
+}
+
+static void load_preferences(void) {
+    NSDictionary *prefs = load_preferences_dictionary();
+
+    gUnseenEnabled = bool_preference(prefs, @"Enabled", YES);
+    gUnseenDisableUpdateMaskPatchEnabled = bool_preference(prefs, @"DisableUpdateMaskPatchEnabled", YES);
+    gUnseenScreenshotActionFilterEnabled = bool_preference(prefs, @"ScreenshotActionFilterEnabled", YES);
+    gUnseenCaptureStateMaskEnabled = bool_preference(prefs, @"CaptureStateMaskEnabled", YES);
+
+    os_log(tweak_log(),
+           "Preferences applied enabled=%{public}s updateMask=%{public}s screenshot=%{public}s capture=%{public}s",
+           gUnseenEnabled ? "YES" : "NO", gUnseenDisableUpdateMaskPatchEnabled ? "YES" : "NO",
+           gUnseenScreenshotActionFilterEnabled ? "YES" : "NO", gUnseenCaptureStateMaskEnabled ? "YES" : "NO");
 }
 
 #pragma mark - Process Filter
@@ -595,6 +639,12 @@ static void install_capture_state_hooks(void) {
 
 __attribute__((constructor)) static void tweak_init(void) {
     os_log(tweak_log(), "Unseen loading in %{public}s (pid %d)", getprogname(), getpid());
+    load_preferences();
+
+    if (!gUnseenEnabled) {
+        os_log(tweak_log(), "Unseen disabled");
+        return;
+    }
 
     const char *process = getprogname();
     if (process && strcmp(process, "SpringBoard") == 0) {
