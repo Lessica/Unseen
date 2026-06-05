@@ -107,6 +107,18 @@ static void load_preferences(void) {
 
 static const uid_t kTargetUid = 501;
 static const char *kTargetPathNeedle = "/var/containers/Bundle/Application/";
+static const size_t kTargetPidCacheSize = 16;
+
+typedef struct {
+    pid_t pid;
+    bool valid;
+    bool isTarget;
+    char path[PROC_PIDPATHINFO_MAXSIZE];
+} TargetPidCacheEntry;
+
+static pthread_mutex_t gTargetPidCacheLock = PTHREAD_MUTEX_INITIALIZER;
+static TargetPidCacheEntry gTargetPidCache[kTargetPidCacheSize];
+static size_t gTargetPidCacheCursor;
 
 static bool pid_has_target_uid(pid_t pid, uid_t expectedUid) {
     struct proc_bsdinfo info;
@@ -117,12 +129,12 @@ static bool pid_has_target_uid(pid_t pid, uid_t expectedUid) {
     return info.pbi_uid == expectedUid;
 }
 
-static bool client_is_target_pid(pid_t pid, char *pathOut, size_t pathOutLen) {
+static bool client_is_target_pid_uncached(pid_t pid, bool uidAlreadyMatched, char *pathOut, size_t pathOutLen) {
     if (pid <= 0) {
         return false;
     }
 
-    if (!pid_has_target_uid(pid, kTargetUid)) {
+    if (!uidAlreadyMatched && !pid_has_target_uid(pid, kTargetUid)) {
         return false;
     }
 
@@ -142,6 +154,50 @@ static bool client_is_target_pid(pid_t pid, char *pathOut, size_t pathOutLen) {
     return true;
 }
 
+static bool client_is_target_pid_with_uid_hint(pid_t pid, bool uidAlreadyMatched, char *pathOut, size_t pathOutLen) {
+    if (pid <= 0) {
+        return false;
+    }
+
+    pthread_mutex_lock(&gTargetPidCacheLock);
+    for (size_t i = 0; i < kTargetPidCacheSize; i++) {
+        TargetPidCacheEntry *entry = &gTargetPidCache[i];
+        if (entry->valid && entry->pid == pid) {
+            bool isTarget = entry->isTarget;
+            if (isTarget && pathOut && pathOutLen > 0) {
+                strlcpy(pathOut, entry->path, pathOutLen);
+            }
+            pthread_mutex_unlock(&gTargetPidCacheLock);
+            return isTarget;
+        }
+    }
+    pthread_mutex_unlock(&gTargetPidCacheLock);
+
+    char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    bool isTarget = client_is_target_pid_uncached(pid, uidAlreadyMatched, path, sizeof(path));
+
+    pthread_mutex_lock(&gTargetPidCacheLock);
+    TargetPidCacheEntry *entry = &gTargetPidCache[gTargetPidCacheCursor++ % kTargetPidCacheSize];
+    entry->pid = pid;
+    entry->valid = true;
+    entry->isTarget = isTarget;
+    if (isTarget) {
+        strlcpy(entry->path, path, sizeof(entry->path));
+    } else {
+        entry->path[0] = '\0';
+    }
+    pthread_mutex_unlock(&gTargetPidCacheLock);
+
+    if (isTarget && pathOut && pathOutLen > 0) {
+        strlcpy(pathOut, path, pathOutLen);
+    }
+    return isTarget;
+}
+
+static bool client_is_target_pid(pid_t pid, char *pathOut, size_t pathOutLen) {
+    return client_is_target_pid_with_uid_hint(pid, false, pathOut, pathOutLen);
+}
+
 static bool client_is_target_audit_token(audit_token_t token, pid_t *pidOut, char *pathOut, size_t pathOutLen) {
     pid_t pid = (pid_t)token.val[5];
     uid_t euid = (uid_t)token.val[1];
@@ -151,7 +207,7 @@ static bool client_is_target_audit_token(audit_token_t token, pid_t *pidOut, cha
     if (pid <= 0 || euid != kTargetUid) {
         return false;
     }
-    return client_is_target_pid(pid, pathOut, pathOutLen);
+    return client_is_target_pid_with_uid_hint(pid, true, pathOut, pathOutLen);
 }
 
 #pragma mark - Instruction Decode
@@ -465,6 +521,32 @@ static BOOL action_is_screenshot(id action) {
     return NO;
 }
 
+static BOOL actions_contains_screenshot(id actions) {
+    if (!actions) {
+        return NO;
+    }
+
+    if ([actions isKindOfClass:[NSArray class]]) {
+        for (id action in (NSArray *)actions) {
+            if (action_is_screenshot(action)) {
+                return YES;
+            }
+        }
+        return NO;
+    }
+
+    if ([actions isKindOfClass:[NSSet class]]) {
+        for (id action in (NSSet *)actions) {
+            if (action_is_screenshot(action)) {
+                return YES;
+            }
+        }
+        return NO;
+    }
+
+    return action_is_screenshot(actions);
+}
+
 static id filtered_actions(id actions, BOOL *removedAny) {
     if (removedAny) {
         *removedAny = NO;
@@ -527,6 +609,11 @@ static pid_t verified_pid_for_action_dispatch(id self) {
 }
 
 static void handle_action_dispatch(id self, SEL _cmd, id actions, ActionDispatchIMP original) {
+    if (!actions_contains_screenshot(actions)) {
+        original(self, _cmd, actions);
+        return;
+    }
+
     pid_t pid = verified_pid_for_action_dispatch(self);
     char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
     if (pid <= 0 || !client_is_target_pid(pid, path, sizeof(path))) {

@@ -100,7 +100,7 @@ jobs:
           mkdir -p dist
           for package in packages/*.deb; do
             base="$(basename "$package" .deb)"
-            cp "$package" "dist/${base}-${{ matrix.build_variant }}.deb"
+            cp "$package" "dist/${base}.deb"
           done
 
       - name: Upload dSYM symbols

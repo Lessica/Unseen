@@ -4,6 +4,7 @@
 .theos
 packages
 compile_commands.json
+docs
 
 # Created by https://www.toptal.com/developers/gitignore/api/macos,objective-c,swift,xcode
 # Edit at https://www.toptal.com/developers/gitignore?templates=macos,objective-c,swift,xcode
