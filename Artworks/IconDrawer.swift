@@ -4,6 +4,7 @@
 
 // swiftc -parse-as-library IconDrawer.swift
 // ./IconDrawer
+// ./IconDrawer --project-icon
 
 import AppKit
 import SwiftUI
