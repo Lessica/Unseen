@@ -106,7 +106,8 @@ static void load_preferences(void) {
 #pragma mark - Process Filter
 
 static const uid_t kTargetUid = 501;
-static const char *kTargetPathNeedle = "/var/containers/Bundle/Application/";
+static const char *kSandboxedAppPathNeedle = "/var/containers/Bundle/Application/";
+static const char *kApplicationsPathComponent = "/Applications/";
 static const size_t kTargetPidCacheSize = 16;
 
 typedef struct {
@@ -129,6 +130,30 @@ static bool pid_has_target_uid(pid_t pid, uid_t expectedUid) {
     return info.pbi_uid == expectedUid;
 }
 
+static bool path_is_jailbreak_application(const char *path) {
+    if (!path) {
+        return false;
+    }
+
+    // Rootful, rootless and RootHide installations use different prefixes, but
+    // their GUI applications all retain an Applications/Foo.app/Foo suffix.
+    // Require the process to be the top-level executable, not an app extension,
+    // framework helper or arbitrary file below the bundle.
+    const char *applications = strstr(path, kApplicationsPathComponent);
+    if (!applications) {
+        return false;
+    }
+
+    const char *bundleStart = applications + strlen(kApplicationsPathComponent);
+    const char *bundleEnd = strstr(bundleStart, ".app/");
+    if (!bundleEnd || bundleEnd == bundleStart) {
+        return false;
+    }
+
+    const char *executable = bundleEnd + strlen(".app/");
+    return executable[0] != '\0' && strchr(executable, '/') == NULL;
+}
+
 static bool client_is_target_pid_uncached(pid_t pid, bool uidAlreadyMatched, char *pathOut, size_t pathOutLen) {
     if (pid <= 0) {
         return false;
@@ -144,7 +169,9 @@ static bool client_is_target_pid_uncached(pid_t pid, bool uidAlreadyMatched, cha
         return false;
     }
 
-    if (!strstr(path, kTargetPathNeedle)) {
+    bool isSandboxedApp = strstr(path, kSandboxedAppPathNeedle) != NULL;
+    bool isJailbreakApp = path_is_jailbreak_application(path);
+    if (!isSandboxedApp && !isJailbreakApp) {
         return false;
     }
 
@@ -214,7 +241,7 @@ static bool client_is_target_audit_token(audit_token_t token, pid_t *pidOut, cha
 
 static inline int is_tst_xn_disableUpdateMask(uint32_t insn) {
     uint32_t masked = insn & 0xFFFFFC1F;
-    return masked == 0xF26C141F || masked == 0xF26C181F || masked == 0xF26C1C1F;
+    return masked == 0xF26C101F || masked == 0xF26C141F || masked == 0xF26C181F || masked == 0xF26C1C1F;
 }
 
 static inline int is_b_ne(uint32_t insn) { return (insn & 0xFF00001F) == 0x54000001; }
@@ -233,7 +260,32 @@ static inline void *decode_bl_target(const uint32_t *insn_addr) {
     return (void *)((uintptr_t)insn_addr + (((intptr_t)imm26) << 2));
 }
 
-static inline int is_tbnz_w0_bit0(uint32_t insn) { return (insn & 0xFFF8001F) == 0x37000000; }
+static inline const uint32_t *decode_nonzero_w0_branch_target(const uint32_t *insn_addr, const char **kind) {
+    uint32_t insn = *insn_addr;
+    int32_t immediate = 0;
+
+    if ((insn & 0xFFF8001F) == 0x37000000) { // TBNZ W0, #0, target
+        immediate = (int32_t)((insn >> 5) & 0x3FFF);
+        if (immediate & 0x2000) {
+            immediate |= (int32_t)0xFFFFC000;
+        }
+        if (kind) {
+            *kind = "TBNZ";
+        }
+    } else if ((insn & 0xFF00001F) == 0x35000000) { // CBNZ W0, target
+        immediate = (int32_t)((insn >> 5) & 0x7FFFF);
+        if (immediate & 0x40000) {
+            immediate |= (int32_t)0xFFF80000;
+        }
+        if (kind) {
+            *kind = "CBNZ";
+        }
+    } else {
+        return NULL;
+    }
+
+    return (const uint32_t *)((uintptr_t)insn_addr + (((intptr_t)immediate) << 2));
+}
 
 static inline int decode_unsigned_store_64(uint32_t insn, uint8_t *rt, uint8_t *rn, uint32_t *offset) {
     if ((insn & 0xFFC00000) != 0xF9000000) {
@@ -332,14 +384,23 @@ static void *resolve_prepare_layer0(void) {
 
 static void *resolve_allowed_in_update(void) {
     const char *image = "/System/Library/Frameworks/QuartzCore.framework/QuartzCore";
-    const char *symbol = "__ZN2CA6Render6Update17allowed_in_updateEPNS0_7ContextEPKNS0_5LayerE";
-    void *sym = DobbySymbolResolver(image, symbol);
-    if (sym) {
-        os_log(patchfinder_log(), "Resolved allowed_in_update via DobbySymbolResolver: %p", sym);
-    } else {
-        os_log_error(patchfinder_log(), "Could not resolve allowed_in_update symbol");
+    const char *candidates[] = {
+        // iOS 17.x declares allowed_in_update as a const member function;
+        // iOS 18.3 uses the non-const spelling again.
+        "__ZNK2CA6Render6Update17allowed_in_updateEPNS0_7ContextEPKNS0_5LayerE",
+        "__ZN2CA6Render6Update17allowed_in_updateEPNS0_7ContextEPKNS0_5LayerE",
+    };
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        void *sym = DobbySymbolResolver(image, candidates[i]);
+        if (sym) {
+            os_log(patchfinder_log(), "Resolved allowed_in_update via DobbySymbolResolver: %p", sym);
+            return sym;
+        }
     }
-    return sym;
+
+    os_log_error(patchfinder_log(), "Could not resolve allowed_in_update symbol");
+    return NULL;
 }
 
 static void *resolve_get_display_info(void) {
@@ -360,7 +421,7 @@ static uint32_t find_get_display_info_flags_offset(void) {
 
     const uint32_t *insns = (const uint32_t *)func;
 
-    for (uint32_t i = 0; i + 6 < 512; i++) {
+    for (uint32_t i = 0; i + 5 < 512; i++) {
         uint8_t loadRt = 0;
         uint8_t loadRn = 0;
         uint32_t loadOffset = 0;
@@ -372,6 +433,11 @@ static uint32_t find_get_display_info_flags_offset(void) {
         uint8_t storeRn = 0;
         uint32_t storeOffset = 0;
         if (!decode_unsigned_store_32(insns[i + 1], &storeRt, &storeRn, &storeOffset) || storeRt != loadRt) {
+            continue;
+        }
+        // DisplayInfo is a large transport struct on every supported release.
+        // Reject small-offset copy loops such as the mode-list copier on iOS 18.
+        if (storeOffset < 0x1000) {
             continue;
         }
 
@@ -388,6 +454,45 @@ static uint32_t find_get_display_info_flags_offset(void) {
                 return storeOffset;
             }
         }
+    }
+
+    // iOS 18 expanded the display-state block from one word followed by an
+    // 8-byte value into three consecutive words. The first word retains the
+    // cloned-display flag, but its output offset moved from 0x11D8 to 0x21D8.
+    for (uint32_t i = 0; i + 5 < 512; i++) {
+        uint8_t loadRt[3] = {0};
+        uint8_t loadRn[3] = {0};
+        uint32_t loadOffset[3] = {0};
+        uint8_t storeRt[3] = {0};
+        uint8_t storeRn[3] = {0};
+        uint32_t storeOffset[3] = {0};
+        bool matched = true;
+
+        for (uint32_t pair = 0; pair < 3; pair++) {
+            uint32_t loadIndex = i + pair * 2;
+            uint32_t storeIndex = loadIndex + 1;
+            if (!decode_unsigned_load_32(insns[loadIndex], &loadRt[pair], &loadRn[pair], &loadOffset[pair]) ||
+                !decode_unsigned_store_32(insns[storeIndex], &storeRt[pair], &storeRn[pair], &storeOffset[pair]) ||
+                loadRt[pair] != storeRt[pair]) {
+                matched = false;
+                break;
+            }
+        }
+
+        if (!matched || storeOffset[0] < 0x1000) {
+            continue;
+        }
+        if (loadRn[1] != loadRn[0] || loadRn[2] != loadRn[0] || storeRn[1] != storeRn[0] ||
+            storeRn[2] != storeRn[0] || loadOffset[1] != loadOffset[0] + 4 ||
+            loadOffset[2] != loadOffset[0] + 8 || storeOffset[1] != storeOffset[0] + 4 ||
+            storeOffset[2] != storeOffset[0] + 8) {
+            continue;
+        }
+
+        os_log(patchfinder_log(),
+               "Resolved expanded get_display_info flags offset 0x%X from display offset 0x%X", storeOffset[0],
+               loadOffset[0]);
+        return storeOffset[0];
     }
 
     os_log_error(patchfinder_log(), "Could not find get_display_info flags offset");
@@ -407,6 +512,48 @@ static void *find_disableUpdateMask_branch(void) {
 
     os_log_info(patchfinder_log(), "Scanning prepare_layer0 at %p (%zu instructions max)", func_start, count);
 
+    void *allowed_in_update = resolve_allowed_in_update();
+    if (allowed_in_update) {
+        for (size_t i = 0; i + 8 < count; i++) {
+            void *target = decode_bl_target(&insns[i]);
+            if (target != allowed_in_update) {
+                continue;
+            }
+
+            os_log_info(patchfinder_log(), "Found allowed_in_update call at %p", (void *)&insns[i]);
+            for (size_t j = 1; j <= 4 && (i + j + 1) < count; j++) {
+                const char *branchKind = NULL;
+                const uint32_t *branchTarget = decode_nonzero_w0_branch_target(&insns[i + j], &branchKind);
+                if (!branchTarget) {
+                    continue;
+                }
+
+                for (size_t k = j + 1; k <= j + 3 && (i + k) < count; k++) {
+                    uint8_t storeRt = 0;
+                    uint8_t storeRn = 0;
+                    uint32_t storeOffset = 0;
+                    if (!decode_unsigned_store_64(insns[i + k], &storeRt, &storeRn, &storeOffset) || storeRt != 31) {
+                        continue;
+                    }
+                    if (branchTarget != &insns[i + k + 1]) {
+                        continue;
+                    }
+
+                    void *store_addr = (void *)&insns[i + k];
+                    os_log(patchfinder_log(),
+                           "Found allowed_in_update %s/clear-store path at %p (base X%u + 0x%X, offset +%zu from call)",
+                           branchKind, store_addr, storeRn, storeOffset, k);
+                    return store_addr;
+                }
+
+                os_log_error(patchfinder_log(),
+                             "allowed_in_update %s found but no matching fallthrough STR XZR clear", branchKind);
+            }
+        }
+    }
+
+    // Older QuartzCore builds test disableUpdateMask directly instead of
+    // consulting allowed_in_update. Keep that exact legacy sequence as fallback.
     for (size_t i = 0; i + 4 < count; i++) {
         if (is_tst_xn_disableUpdateMask(insns[i])) {
             os_log_info(patchfinder_log(), "Found TST at %p (insn=0x%x)", (void *)&insns[i], insns[i]);
@@ -418,40 +565,6 @@ static void *find_disableUpdateMask_branch(void) {
                 }
             }
             os_log_error(patchfinder_log(), "TST found but no B.NE within 4 instructions");
-        }
-    }
-
-    void *allowed_in_update = resolve_allowed_in_update();
-    if (allowed_in_update) {
-        for (size_t i = 0; i + 8 < count; i++) {
-            void *target = decode_bl_target(&insns[i]);
-            if (target != allowed_in_update) {
-                continue;
-            }
-
-            os_log_info(patchfinder_log(), "Found allowed_in_update call at %p", (void *)&insns[i]);
-            for (size_t j = 1; j <= 4 && (i + j + 1) < count; j++) {
-                if (!is_tbnz_w0_bit0(insns[i + j])) {
-                    continue;
-                }
-
-                for (size_t k = j + 1; k <= j + 3 && (i + k) < count; k++) {
-                    uint8_t storeRt = 0;
-                    uint8_t storeRn = 0;
-                    uint32_t storeOffset = 0;
-                    if (!decode_unsigned_store_64(insns[i + k], &storeRt, &storeRn, &storeOffset) || storeRt != 31) {
-                        continue;
-                    }
-
-                    void *store_addr = (void *)&insns[i + k];
-                    os_log(patchfinder_log(),
-                           "Found iOS 18 allowed_in_update clear store at %p (base X%u + 0x%X, offset +%zu from call)",
-                           store_addr, storeRn, storeOffset, k);
-                    return store_addr;
-                }
-
-                os_log_error(patchfinder_log(), "allowed_in_update TBNZ found but no nearby STR XZR clear");
-            }
         }
     }
 

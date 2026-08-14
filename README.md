@@ -2,9 +2,9 @@
 
 [简体中文](README.zh.md)
 
-Unseen is an iOS tweak that reduces ordinary apps' ability to detect or interfere with screenshots, screen recordings, and hidden layer flags.
+Unseen is an iOS tweak that reduces ordinary apps' ability to detect or interfere with screenshots, screen recordings, and hidden layer flags. Its targets include sandboxed apps and jailbreak apps installed below the rootful, rootless, or RootHide `Applications` directory.
 
-Tested on iOS 15.0/16.x/18.3, supports arm64/arm64e devices.
+Tested on iOS 15.0/16.x/18.3, supports arm64/arm64e devices. The QuartzCore matchers are also regression-tested against local iOS 14.8, 15.0, 16.x, 17.0, 17.3.1, and 18.3 dyld shared caches.
 
 ## Background
 
@@ -29,6 +29,14 @@ https://github.com/user-attachments/assets/4bb391eb-1f1e-4aaf-a133-06730d060858
 - **Hide Screenshot Events**: Tries to prevent apps from learning when you take a screenshot through the system screenshot notification.
 - **Hide Recording State**: Tries to prevent apps from learning that the screen is being recorded or mirrored through the system capture-state notification.
 - **Restart Rendering Services**: Restarts `backboardd` and `SpringBoard` so rendering-related settings are reloaded.
+
+## Test App
+
+DEBUG packages include a `testapp` Theos application target; release packages omit it. After installing a DEBUG deb, `postinst` runs `uicache` and **Unseen Test** can verify hidden layers, a secure text canvas, system screenshot notifications, and `UIScreen.isCaptured`/capture-state notifications. Establish a baseline with the master switch off, then enable every option, restart the rendering services, and repeat the same actions. See [`testapp/README.md`](testapp/README.md) for the full procedure.
+
+## DSC Pattern Regression
+
+Run `scripts/verify-dsc-patterns.py --root /path/to/dyld` to test every main arm64/arm64e cache below a directory. The script resolves the real QuartzCore symbols with `ipsw`, disassembles the functions, and requires exactly one update-mask patch target and one display-flags offset per cache. It understands the legacy `TST/B.NE` path, the iOS 17+ `allowed_in_update` path, and both the packed and expanded DisplayInfo layouts.
 
 ## License
 

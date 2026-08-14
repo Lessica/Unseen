@@ -2,9 +2,9 @@
 
 [English](README.md)
 
-Unseen 是一个 iOS tweak，用于降低普通 App 对截图、录屏和隐藏图层标记的感知与干扰。
+Unseen 是一个 iOS tweak，用于降低普通 App 对截图、录屏和隐藏图层标记的感知与干扰。目标范围同时包括沙盒 App，以及安装在 rootful、rootless 或 RootHide `Applications` 目录中的越狱 App。
 
-在 iOS 15.0/16.x/18.3 上测试通过，支持 arm64/arm64e 设备。
+在 iOS 15.0/16.x/18.3 上测试通过，支持 arm64/arm64e 设备；QuartzCore matcher 另使用本地 iOS 14.8、15.0、16.x、17.0、17.3.1 和 18.3 的 dyld shared cache 做了回归测试。
 
 ## 前情提要
 
@@ -29,6 +29,14 @@ https://github.com/user-attachments/assets/4bb391eb-1f1e-4aaf-a133-06730d060858
 - **隐藏截图行为**：尽量阻止 App 通过系统截图通知得知用户何时截图。
 - **隐藏录屏状态**：尽量阻止 App 通过系统录屏状态通知得知屏幕正在被录制或投放。
 - **重启渲染服务**：重启 `backboardd` 和 `SpringBoard`，让渲染相关设置重新载入。
+
+## 测试 App
+
+DEBUG 包会包含 `testapp` Theos application target，release 包不会打入该 App。安装 DEBUG deb 后，`postinst` 会执行 `uicache`；随后打开 **Unseen Test**，可分别验证隐藏图层、secure text canvas、系统截图通知和 `UIScreen.isCaptured`/录屏状态通知。建议先关闭总开关建立基线，再打开全部选项、重启渲染服务并重复同一组操作。详细步骤见 [`testapp/README.md`](testapp/README.md)。
+
+## DSC Pattern 回归
+
+运行 `scripts/verify-dsc-patterns.py --root /path/to/dyld`，即可测试目录下全部 arm64/arm64e 主缓存。脚本通过 `ipsw` 解析真实 QuartzCore 符号并反汇编目标函数，要求每个 DSC 的 update-mask patch target 和 display-flags offset 都恰好唯一命中。当前覆盖旧版 `TST/B.NE` 路径、iOS 17+ 的 `allowed_in_update` 路径，以及 packed/expanded 两种 DisplayInfo 布局。
 
 ## License
 

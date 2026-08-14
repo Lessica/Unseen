@@ -1,9 +1,9 @@
 Package: com.82flex.unseen
 Name: Unseen
-Version: 0.0.2
+Version: 0.0.3
 Architecture: iphoneos-arm
 Description: Neutralizes CALayer disableUpdateMask in the render server
 Maintainer: 82flex
 Author: 82flex
 Section: Tweaks
-Depends: firmware (>= 15.0), preferenceloader
+Depends: firmware (>= 14.0), preferenceloader

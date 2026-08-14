@@ -1,0 +1,20 @@
+#!/bin/sh
+
+HAS_UNSEEN_TEST=0
+
+if [ -d /Applications/UnseenTest.app ] || [ -d /var/jb/Applications/UnseenTest.app ]; then
+    HAS_UNSEEN_TEST=1
+else
+    for APP_PATH in /var/containers/Bundle/Application/.jbroot-*/Applications/UnseenTest.app; do
+        if [ -d "$APP_PATH" ]; then
+            HAS_UNSEEN_TEST=1
+            break
+        fi
+    done
+fi
+
+if [ "$HAS_UNSEEN_TEST" -eq 1 ] && command -v uicache >/dev/null 2>&1; then
+    uicache -u com.82flex.unseen.test >/dev/null 2>&1 || true
+fi
+
+exit 0

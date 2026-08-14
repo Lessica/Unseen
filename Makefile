@@ -15,6 +15,9 @@ Unseen_FRAMEWORKS += Foundation
 Unseen_FRAMEWORKS += CoreFoundation
 
 SUBPROJECTS += prefs
+ifneq ($(filter DEBUG,$(THEOS_SCHEMA)),)
+SUBPROJECTS += testapp
+endif
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/aggregate.mk

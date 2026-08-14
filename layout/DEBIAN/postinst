@@ -1,0 +1,22 @@
+#!/bin/sh
+
+register_unseen_test() {
+    APP_PATH="$1"
+    if [ ! -d "$APP_PATH" ]; then
+        return 1
+    fi
+
+    if command -v uicache >/dev/null 2>&1; then
+        uicache -p "$APP_PATH" >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+register_unseen_test /Applications/UnseenTest.app && exit 0
+register_unseen_test /var/jb/Applications/UnseenTest.app && exit 0
+
+for APP_PATH in /var/containers/Bundle/Application/.jbroot-*/Applications/UnseenTest.app; do
+    register_unseen_test "$APP_PATH" && exit 0
+done
+
+exit 0
