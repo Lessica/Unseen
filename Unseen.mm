@@ -324,56 +324,6 @@ static inline int decode_unsigned_store_64(uint32_t insn, uint8_t *rt, uint8_t *
     return 1;
 }
 
-static inline int decode_unsigned_load_64(uint32_t insn, uint8_t *rt, uint8_t *rn, uint32_t *offset) {
-    if ((insn & 0xFFC00000) != 0xF9400000) {
-        return 0;
-    }
-    if (rt) {
-        *rt = insn & 0x1F;
-    }
-    if (rn) {
-        *rn = (insn >> 5) & 0x1F;
-    }
-    if (offset) {
-        *offset = ((insn >> 10) & 0xFFF) << 3;
-    }
-    return 1;
-}
-
-static inline int decode_unscaled_load_64(uint32_t insn, uint8_t *rt, uint8_t *rn, int32_t *offset) {
-    if ((insn & 0xFFC00C00) != 0xF8400000) {
-        return 0;
-    }
-    if (rt) {
-        *rt = insn & 0x1F;
-    }
-    if (rn) {
-        *rn = (insn >> 5) & 0x1F;
-    }
-    if (offset) {
-        int32_t immediate = (int32_t)((insn >> 12) & 0x1FF);
-        if (immediate & 0x100) {
-            immediate |= ~0x1FF;
-        }
-        *offset = immediate;
-    }
-    return 1;
-}
-
-static inline int decode_mov_x_from_x0(uint32_t insn, uint8_t *rd) {
-    if ((insn & 0xFFFFFFE0) != 0xAA0003E0) {
-        return 0;
-    }
-    if (rd) {
-        *rd = insn & 0x1F;
-    }
-    return 1;
-}
-
-static inline int is_adrp_to_register(uint32_t insn, uint8_t rd) {
-    return (insn & 0x9F00001F) == (0x90000000 | rd);
-}
-
 static inline int decode_unsigned_load_32(uint32_t insn, uint8_t *rt, uint8_t *rn, uint32_t *offset) {
     if ((insn & 0xFFC00000) != 0xB9400000) {
         return 0;
@@ -597,9 +547,6 @@ typedef struct {
 typedef struct {
     const uint32_t *test;
     const uint32_t *branch;
-    uint64_t updateMask;
-    uint8_t flagsRegister;
-    uint8_t updaterRegister;
 } LegacyUpdateCallsite;
 
 static bool find_allowed_update_callsite(void *func_start, void *allowed_in_update, AllowedUpdateCallsite *result) {
@@ -770,29 +717,6 @@ static bool find_legacy_update_callsite(void *func_start, LegacyUpdateCallsite *
     const uint32_t *insns = (const uint32_t *)func_start;
     size_t count = max_scan_size / sizeof(uint32_t);
 
-    // x0 is Updater *. Apple moves it into a callee-saved register in the
-    // prologue; the chosen register changed from X23 to X28 across iOS 16.
-    uint8_t updaterRegister = 0xFF;
-    for (size_t i = 0; i < 32 && i < count; i++) {
-        uint8_t candidate = 0;
-        if (decode_mov_x_from_x0(insns[i], &candidate) && candidate >= 19 && candidate <= 28) {
-            updaterRegister = candidate;
-            break;
-        }
-    }
-    // Verify the inferred Updater register against its Context * field. This
-    // keeps the instrumentation from relying on a version-specific X register.
-    bool hasContextReference = false;
-    for (size_t i = 0; updaterRegister != 0xFF && i < 128 && i < count; i++) {
-        uint8_t loadRt = 0;
-        uint8_t loadRn = 0;
-        uint32_t loadOffset = 0;
-        if (decode_unsigned_load_64(insns[i], &loadRt, &loadRn, &loadOffset) &&
-            loadRn == updaterRegister && loadOffset == 0x18) {
-            hasContextReference = true;
-            break;
-        }
-    }
     // Older QuartzCore builds test disableUpdateMask directly instead of
     // consulting allowed_in_update.
     for (size_t i = 0; i + 4 < count; i++) {
@@ -800,18 +724,6 @@ static bool find_legacy_update_callsite(void *func_start, LegacyUpdateCallsite *
             continue;
         }
 
-        uint8_t flagsRegister = (insns[i] >> 5) & 0x1F;
-        bool hasLayerFlagsLoad = false;
-        for (size_t distance = 1; distance <= 4 && distance <= i; distance++) {
-            uint8_t loadRt = 0;
-            uint8_t loadRn = 0;
-            int32_t loadOffset = 0;
-            if (decode_unscaled_load_64(insns[i - distance], &loadRt, &loadRn, &loadOffset) &&
-                loadRt == flagsRegister && loadOffset == 0x24) {
-                hasLayerFlagsLoad = true;
-                break;
-            }
-        }
         for (size_t j = 1; j <= 4 && (i + j + 1) < count; j++) {
             if (!is_b_ne(insns[i + j])) {
                 continue;
@@ -819,23 +731,8 @@ static bool find_legacy_update_callsite(void *func_start, LegacyUpdateCallsite *
 
             result->test = &insns[i];
             result->branch = &insns[i + j];
-            result->updateMask = decode_tst_disableUpdateMask(insns[i]);
-            result->flagsRegister = flagsRegister;
-            bool overwritesFlagsOnFallthrough =
-                is_adrp_to_register(insns[i + j + 1], flagsRegister);
-            result->updaterRegister =
-                hasLayerFlagsLoad && overwritesFlagsOnFallthrough && hasContextReference
-                    ? updaterRegister
-                    : 0xFF;
-            if (result->updaterRegister <= 28) {
-                os_log(patchfinder_log(),
-                       "Found process-aware legacy TST/B.NE at %p/%p (flags X%u, Updater X%u)",
-                       (void *)result->test, (void *)result->branch, flagsRegister, updaterRegister);
-            } else {
-                os_log(patchfinder_log(),
-                       "Found original legacy TST/B.NE at %p/%p without process-aware context",
-                       (void *)result->test, (void *)result->branch);
-            }
+            os_log(patchfinder_log(), "Found legacy TST/B.NE at %p/%p",
+                   (void *)result->test, (void *)result->branch);
             return true;
         }
     }
@@ -851,9 +748,6 @@ typedef bool (*AllowedInUpdateIMP)(void *update, void *context, const void *laye
 static AllowedInUpdateIMP orig_allowed_in_update;
 static uintptr_t prepare_allowed_return_address;
 static uint32_t render_context_pid_offset;
-static uint64_t legacy_update_mask;
-static uint8_t legacy_flags_register;
-static uint8_t legacy_updater_register;
 static pid_t springboard_pid;
 static id springboard_shell_observer;
 static id springboard_shell_observer_registration;
@@ -1028,61 +922,6 @@ static bool install_scoped_allowed_in_update_hook(void *allowed_in_update,
     return true;
 }
 
-static void legacy_update_mask_instrumentation(void *address, DobbyRegisterContext *registers) {
-    (void)address;
-    if (!registers || legacy_flags_register > 28 || legacy_updater_register > 28) {
-        return;
-    }
-
-    uint64_t flags = registers->general.x[legacy_flags_register];
-    if ((flags & legacy_update_mask) == 0) {
-        return;
-    }
-
-    uintptr_t updater = registers->general.x[legacy_updater_register];
-    if (updater == 0) {
-        return;
-    }
-    const void *context = __atomic_load_n(
-        (void *const *)(updater + 0x18), __ATOMIC_ACQUIRE);
-    if (context_is_allowed_to_bypass_update_mask(context)) {
-        // Preserve unrelated Layer flags and clear exactly the immediate mask
-        // encoded by this TST for this one decision.
-        registers->general.x[legacy_flags_register] = flags & ~legacy_update_mask;
-    }
-}
-
-static bool install_legacy_process_aware_update_mask(const LegacyUpdateCallsite *callsite) {
-    if (!callsite || !callsite->test || callsite->updateMask == 0 || callsite->flagsRegister > 28 ||
-        callsite->updaterRegister > 28) {
-        return false;
-    }
-    uint32_t pidOffset = find_render_context_pid_offset();
-    if (pidOffset == 0) {
-        return false;
-    }
-
-    render_context_pid_offset = pidOffset;
-    legacy_update_mask = callsite->updateMask;
-    legacy_flags_register = callsite->flagsRegister;
-    legacy_updater_register = callsite->updaterRegister;
-    start_springboard_system_shell_observer();
-    int ret = DobbyInstrument((void *)callsite->test, legacy_update_mask_instrumentation);
-    if (ret != 0) {
-        os_log_error(tweak_log(), "DobbyInstrument legacy update-mask TST failed at %p (ret=%d)",
-                     (void *)callsite->test, ret);
-        return false;
-    }
-
-    os_log(tweak_log(),
-           "Installed process-aware legacy update-mask instrumentation at %p "
-           "(mask=0x%llX, flags X%u, Updater X%u, context PID=0x%X)",
-           (void *)callsite->test, (unsigned long long)callsite->updateMask, callsite->flagsRegister,
-           callsite->updaterRegister,
-           render_context_pid_offset);
-    return true;
-}
-
 static bool patch_update_mask_instruction_to_nop(void *target, const char *path) {
     if (!target) {
         return false;
@@ -1099,7 +938,7 @@ static bool patch_update_mask_instruction_to_nop(void *target, const char *path)
 
 static bool system_supports_process_aware_update_mask(void) {
     NSOperatingSystemVersion version = NSProcessInfo.processInfo.operatingSystemVersion;
-    return version.majorVersion >= 16;
+    return version.majorVersion >= 17;
 }
 
 static void install_disableUpdateMask_patch(void) {
@@ -1117,7 +956,7 @@ static void install_disableUpdateMask_patch(void) {
     bool processAware =
         gUnseenProcessAwareUpdateMaskBypassEnabled && system_supports_process_aware_update_mask();
     if (gUnseenProcessAwareUpdateMaskBypassEnabled && !processAware) {
-        os_log_info(tweak_log(), "Process-aware update-mask bypass is limited to iOS 16 and later; using original path");
+        os_log_info(tweak_log(), "System UI protection requires iOS 17 or later; using original path");
     }
 
     void *allowed_in_update = resolve_allowed_in_update();
@@ -1137,10 +976,20 @@ static void install_disableUpdateMask_patch(void) {
             return;
         }
 
+        if (processAware) {
+            os_log_error(tweak_log(),
+                         "Scoped update-mask callsite unavailable - leaving QuartzCore unchanged");
+            return;
+        }
+
         // iOS 16 exports allowed_in_update but prepare_layer0 still uses the
-        // older direct TST/B.NE sequence. Continue to the legacy matcher only
-        // when no modern callsite exists.
+        // older direct TST/B.NE sequence. Continue to the original matcher.
         os_log_info(tweak_log(), "No prepare_layer0 allowed_in_update callsite; trying legacy pattern");
+    }
+
+    if (processAware) {
+        os_log_error(tweak_log(), "allowed_in_update unavailable - leaving QuartzCore unchanged");
+        return;
     }
 
     LegacyUpdateCallsite legacyCallsite = {0};
@@ -1149,14 +998,7 @@ static void install_disableUpdateMask_patch(void) {
         return;
     }
 
-    if (processAware) {
-        if (!install_legacy_process_aware_update_mask(&legacyCallsite)) {
-            os_log_error(tweak_log(),
-                         "Process-aware legacy update-mask path unavailable - leaving QuartzCore unchanged");
-        }
-    } else {
-        patch_update_mask_instruction_to_nop((void *)legacyCallsite.branch, "legacy B.NE");
-    }
+    patch_update_mask_instruction_to_nop((void *)legacyCallsite.branch, "legacy B.NE");
 }
 
 #pragma mark - Screenshot Action Hooks

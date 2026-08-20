@@ -2,7 +2,7 @@
 
 `UnseenTest` 是仅随 DEBUG 包构建和安装的 Theos application target，用于在真机上端到端验证三条功能链路；release 包不会包含它，也不会因卸载普通插件包而刷新它的图标：
 
-1. QuartzCore `disableUpdateMask` 渲染屏蔽，以及 iOS 16+ 的 SpringBoard 图层排除（同时测试直接设置 `0x12` 和 secure `UITextField` canvas）。
+1. QuartzCore `disableUpdateMask` 渲染屏蔽，以及 iOS 17+ 的 SpringBoard 图层排除（同时测试直接设置 `0x12` 和 secure `UITextField` canvas）。
 2. `UIApplicationUserDidTakeScreenshotNotification` 截图事件过滤。
 3. `UIScreen.isCaptured` 与 `UIScreenCapturedDidChangeNotification` 录屏/投放状态屏蔽。
 
@@ -25,12 +25,12 @@ DEBUG deb 的 `postinst` 会调用 `uicache -p` 注册桌面图标；卸载时�
 - 截图：普通绿色卡片存在，紫色和橙色受保护卡片缺失；“系统事件”增加。
 - 录屏或镜像：状态显示“正在捕获”，状态通知或轮询变化增加；受保护卡片在成片中缺失。
 
-然后打开总开关及全部四个功能开关，再次重启渲染服务并重复操作：
+然后打开总开关及当前系统提供的全部功能开关，再次重启渲染服务并重复操作：
 
-- 截图/录屏：三张卡片都存在；在带灵动岛的设备上，黑色药丸等 SpringBoard 隐藏图层不应出现在成片中。
+- 截图/录屏：三张卡片都存在；iOS 17+ 在带灵动岛的设备上，黑色药丸等 SpringBoard 隐藏图层不应出现在成片中。iOS 16 使用原本的 legacy 路径，不提供这项系统界面保护。
 - 截图：“系统事件”保持 0；“本地模拟”仍可增加。
 - 录屏或镜像：`isCaptured` 保持 `NO`，状态通知和轮询变化保持 0。
 
-最后保持“显示被隐藏的画面”开启，只关闭“保护系统界面”并重启渲染服务：三张测试卡片仍应存在，但旧版无条件 update-mask 路径的系统界面泄漏会重新出现；重新开启该选项后，App 的受保护卡片保持可见，SpringBoard 隐藏图层再次被排除。
+在 iOS 17+ 上，最后保持“显示被隐藏的画面”开启，只关闭“保护系统界面”并重启渲染服务：三张测试卡片仍应存在，但旧版无条件 update-mask 路径的系统界面泄漏会重新出现；重新开启该选项后，App 的受保护卡片保持可见，SpringBoard 隐藏图层再次被排除。
 
 每轮测试前使用界面中的清零按钮。设置由 `backboardd` 和 `SpringBoard` 启动时读取，因此只杀掉测试 App 不会使插件设置生效。

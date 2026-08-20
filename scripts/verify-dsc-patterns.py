@@ -152,29 +152,6 @@ def decode_str_xzr(instruction: Instruction) -> tuple[int, int] | None:
     return (raw >> 5) & 0x1F, ((raw >> 10) & 0xFFF) << 3
 
 
-def _decode_mov_x_from_x0(raw: int) -> int | None:
-    if raw & 0xFFFFFFE0 != 0xAA0003E0:
-        return None
-    return raw & 0x1F
-
-
-def _decode_load_64(raw: int) -> tuple[int, int, int] | None:
-    if raw & 0xFFC00000 != 0xF9400000:
-        return None
-    return raw & 0x1F, (raw >> 5) & 0x1F, ((raw >> 10) & 0xFFF) << 3
-
-
-def _decode_unscaled_load_64(raw: int) -> tuple[int, int, int] | None:
-    if raw & 0xFFC00C00 != 0xF8400000:
-        return None
-    offset = _sign_extend((raw >> 12) & 0x1FF, 9)
-    return raw & 0x1F, (raw >> 5) & 0x1F, offset
-
-
-def _is_adrp_to_register(raw: int, register: int) -> bool:
-    return raw & 0x9F00001F == 0x90000000 | register
-
-
 def _decode_tst_update_mask(raw: int) -> int | None:
     return {
         0xF26C101F: 0x01F00000,
@@ -184,59 +161,23 @@ def _decode_tst_update_mask(raw: int) -> int | None:
     }.get(raw & 0xFFFFFC1F)
 
 
-def find_legacy_update_pattern(function: Function) -> list[tuple[int, int, int, int, int]]:
+def find_legacy_update_pattern(function: Function) -> list[tuple[int, int, int, int]]:
     instructions = function.instructions
-    results: list[tuple[int, int, int, int, int]] = []
-
-    updater_register = -1
-    for instruction in instructions[:32]:
-        candidate = _decode_mov_x_from_x0(instruction.raw)
-        if candidate is not None and 19 <= candidate <= 28:
-            updater_register = candidate
-            break
-    has_context_reference = any(
-        decoded is not None
-        and decoded[1] == updater_register
-        and decoded[2] == 0x18
-        for decoded in (_decode_load_64(instruction.raw) for instruction in instructions[:128])
-    )
+    results: list[tuple[int, int, int, int]] = []
 
     for index, instruction in enumerate(instructions):
         update_mask = _decode_tst_update_mask(instruction.raw)
         if update_mask is None:
             continue
         flags_register = (instruction.raw >> 5) & 0x1F
-        has_layer_flags_load = any(
-            decoded is not None and decoded[0] == flags_register and decoded[2] == 0x24
-            for decoded in (
-                _decode_unscaled_load_64(candidate.raw)
-                for candidate in instructions[max(0, index - 4) : index]
-            )
-        )
-        for branch_index, candidate in enumerate(
-            instructions[index + 1 : index + 5], start=index + 1
-        ):
+        for candidate in instructions[index + 1 : index + 5]:
             if candidate.raw & 0xFF00001F == 0x54000001:
-                fallthrough_overwrites_flags = (
-                    branch_index + 1 < len(instructions)
-                    and _is_adrp_to_register(
-                        instructions[branch_index + 1].raw, flags_register
-                    )
-                )
-                semantic_updater = (
-                    updater_register
-                    if has_context_reference
-                    and has_layer_flags_load
-                    and fallthrough_overwrites_flags
-                    else -1
-                )
                 results.append(
                     (
                         instruction.address,
                         candidate.address,
                         update_mask,
                         flags_register,
-                        semantic_updater,
                     )
                 )
     return results
@@ -460,15 +401,11 @@ def main() -> int:
             call, branch, store, kind, base, offset = allowed_hits[0]
             update_text = f"allowed/{kind}@0x{store:x}[x{base}+0x{offset:x}]"
         elif len(legacy_hits) == 1:
-            _, branch, update_mask, flags_register, updater_register = legacy_hits[0]
-            if updater_register >= 0:
-                update_text = (
-                    f"legacy/B.NE@0x{branch:x}"
-                    f"[mask=0x{update_mask:x},flags=x{flags_register},"
-                    f"updater=x{updater_register},ctx=+0x18]"
-                )
-            else:
-                update_text = f"legacy/B.NE@0x{branch:x}"
+            _, branch, update_mask, flags_register = legacy_hits[0]
+            update_text = (
+                f"legacy/B.NE@0x{branch:x}"
+                f"[mask=0x{update_mask:x},flags=x{flags_register}]"
+            )
         elif allowed_hits or legacy_hits:
             update_text = f"ambiguous(a={len(allowed_hits)},l={len(legacy_hits)})"
         else:
@@ -495,15 +432,9 @@ def main() -> int:
             len(allowed_hits) == 1
             and len(context_pid_offsets) == 1
         )
-        legacy_process_aware = (
-            len(legacy_hits) == 1
-            and legacy_hits[0][4] >= 0
-            and len(context_pid_offsets) == 1
-        )
         legacy_success = (
             len(allowed_hits) == 0
             and len(legacy_hits) == 1
-            and (allowed is None or legacy_process_aware)
         )
         success = (modern_success or legacy_success) and len(display_hits) == 1
         if not success:

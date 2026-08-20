@@ -26,7 +26,7 @@ https://github.com/user-attachments/assets/4bb391eb-1f1e-4aaf-a133-06730d060858
 
 - **启用 Unseen**：总开关。关闭后，Unseen 不会处理隐藏画面、截图通知或录屏状态。
 - **显示被隐藏的画面**：尽量让截图和录屏显示 App 通过私有接口标记为隐藏的普通画面。此功能不会绕过 DRM 或系统版权保护。
-- **保护系统界面**：避免在截图和录屏中显示本应隐藏的系统界面，仅在 iOS 16 及以上版本提供。
+- **保护系统界面**：避免在截图和录屏中显示本应隐藏的系统界面，仅在 iOS 17 及以上版本提供。
 - **隐藏截图行为**：尽量阻止 App 通过系统截图通知得知用户何时截图。
 - **隐藏录屏状态**：尽量阻止 App 通过系统录屏状态通知得知屏幕正在被录制或投放。
 - **重启渲染服务**：重启 `backboardd` 和 `SpringBoard`，让渲染相关设置重新载入。
@@ -37,11 +37,11 @@ DEBUG 包会包含 `testapp` Theos application target，release 包不会打入�
 
 ## DSC Pattern 回归
 
-运行 `scripts/verify-dsc-patterns.py --root /path/to/dyld`，即可测试目录下全部 arm64/arm64e 主缓存。脚本通过 `ipsw` 解析真实 QuartzCore 符号并反汇编目标函数，同时验证 update-mask 路径、iOS 16+ 缓存的 Render::Context PID offset 和 DisplayInfo flags offset。当前覆盖带进程归属判断的 iOS 16 legacy `TST/B.NE` 路径、限定在 `prepare_layer0` 调用点的 iOS 17+ `allowed_in_update` 路径、iOS 18 内联的 PID getter，以及 packed/expanded 两种 DisplayInfo 布局。
+运行 `scripts/verify-dsc-patterns.py --root /path/to/dyld`，即可测试目录下全部 arm64/arm64e 主缓存。脚本通过 `ipsw` 解析真实 QuartzCore 符号并反汇编目标函数，同时验证 legacy update-mask 路径、限定在 `prepare_layer0` 调用点的 iOS 17+ `allowed_in_update` 路径与缓存的 Render::Context PID offset、iOS 18 内联的 PID getter，以及 packed/expanded 两种 DisplayInfo 布局。
 
 运行 `scripts/fetch-dsc-matrix.sh run` 可将稀疏的 iPhone15,2 矩阵（iOS 16.0、16.4、17.4、17.7、18.0、18.2）下载到 `/Users/82flex/Desktop/dyld`。脚本按顺序断点续传，将每个完成的 IPSW 提取到 `iOS_<版本>__<Build>__<设备>`，验证后删除完整 IPSW；也可以显式传入支持的版本补点，并通过 `status` 或 `stop` 查看、终止任务。
 
-iOS 16 及以上版本的进程感知渲染路径只比较缓存的整数 PID：iOS 16 动态提取当前 Updater 寄存器并 instrument legacy 图层 flags 测试；iOS 17 及以上版本只 hook `allowed_in_update` 来自 `prepare_layer0` 的调用。两条路径都直接复用 backboardd 已有的 `BKSystemShellSentinel` 来维护 SpringBoard PID；归属判断中不执行进程枚举、进程名查询、Objective-C 消息、内存分配或加锁。
+iOS 17 及以上版本的进程感知渲染路径只 hook `allowed_in_update` 来自 `prepare_layer0` 的调用，并比较缓存的整数 PID。该路径直接复用 backboardd 已有的 `BKSystemShellSentinel` 来维护 SpringBoard PID；归属判断中不执行进程枚举、进程名查询、Objective-C 消息、内存分配或加锁。iOS 16 保留原本的 legacy `TST/B.NE` patch，不提供“保护系统界面”选项。
 
 ## License
 

@@ -81,8 +81,8 @@ NS_INLINE void UnseenRestartProcesses(NSSet<NSString *> *processNames) {
 - (NSArray *)specifiers {
     if (!_specifiers) {
         NSMutableArray *specifiers = [[self loadSpecifiersFromPlistName:@"Root" target:self] mutableCopy];
-        if (@available(iOS 16.0, *)) {
-            // The process-aware System UI protection is available on iOS 16 and later.
+        if (@available(iOS 17.0, *)) {
+            // The scoped System UI protection is available on iOS 17 and later.
         } else {
             NSUInteger optionIndex = [specifiers indexOfObjectPassingTest:^BOOL(PSSpecifier *specifier,
                                                                                NSUInteger index,

@@ -26,7 +26,7 @@ https://github.com/user-attachments/assets/4bb391eb-1f1e-4aaf-a133-06730d060858
 
 - **Enable Unseen**: Master switch. When disabled, Unseen will not handle hidden content, screenshot notices, or screen recording state.
 - **Reveal Hidden Content**: Makes screenshots and recordings try to show ordinary app content hidden through private layer flags. This does not bypass DRM or system copyright protections.
-- **Protect System UI**: Avoids showing system interface elements that should remain hidden in screenshots and recordings. Available on iOS 16 and later.
+- **Protect System UI**: Avoids showing system interface elements that should remain hidden in screenshots and recordings. Available on iOS 17 and later.
 - **Hide Screenshot Events**: Tries to prevent apps from learning when you take a screenshot through the system screenshot notification.
 - **Hide Recording State**: Tries to prevent apps from learning that the screen is being recorded or mirrored through the system capture-state notification.
 - **Restart Rendering Services**: Restarts `backboardd` and `SpringBoard` so rendering-related settings are reloaded.
@@ -37,11 +37,11 @@ DEBUG packages include a `testapp` Theos application target; release packages om
 
 ## DSC Pattern Regression
 
-Run `scripts/verify-dsc-patterns.py --root /path/to/dyld` to test every main arm64/arm64e cache below a directory. The script resolves the real QuartzCore symbols with `ipsw`, disassembles the functions, and validates the update-mask path, the iOS 16+ cached Render::Context PID offset, and the DisplayInfo flags offset. It understands the process-aware iOS 16 legacy `TST/B.NE` path, the scoped iOS 17+ `allowed_in_update` callsite, the inlined iOS 18 PID getter, and both the packed and expanded DisplayInfo layouts.
+Run `scripts/verify-dsc-patterns.py --root /path/to/dyld` to test every main arm64/arm64e cache below a directory. The script resolves the real QuartzCore symbols with `ipsw`, disassembles the functions, and validates the legacy update-mask path, the scoped iOS 17+ `allowed_in_update` callsite and cached Render::Context PID offset, the inlined iOS 18 PID getter, and both the packed and expanded DisplayInfo layouts.
 
 `scripts/fetch-dsc-matrix.sh run` downloads the sparse iPhone15,2 matrix (iOS 16.0, 16.4, 17.4, 17.7, 18.0, and 18.2) into `/Users/82flex/Desktop/dyld`. Downloads are resumable and sequential; each completed IPSW is extracted into `iOS_<version>__<build>__<device>`, verified, and then removed. Pass explicit versions to sample additional supported points, and use the `status` or `stop` action to inspect or interrupt the worker.
 
-On iOS 16 and later, the process-aware render path compares only cached integer PIDs. iOS 16 derives the live Updater register and instruments the legacy layer-flags test; iOS 17 and later hook only the `prepare_layer0` caller of `allowed_in_update`. Both paths reuse backboardd's existing `BKSystemShellSentinel` lifecycle to maintain SpringBoard's PID; no process enumeration, process-name lookup, Objective-C messaging, allocation, or locking occurs inside the ownership decision.
+On iOS 17 and later, the process-aware render path hooks only the `prepare_layer0` caller of `allowed_in_update` and compares cached integer PIDs. It reuses backboardd's existing `BKSystemShellSentinel` lifecycle to maintain SpringBoard's PID; no process enumeration, process-name lookup, Objective-C messaging, allocation, or locking occurs inside the ownership decision. iOS 16 keeps the original legacy `TST/B.NE` patch and does not expose System UI protection.
 
 ## License
 
