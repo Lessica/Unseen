@@ -21,6 +21,11 @@ ALLOWED_SYMBOLS = (
     "__ZNK2CA6Render6Update17allowed_in_updateEPNS0_7ContextEPKNS0_5LayerE",
     "__ZN2CA6Render6Update17allowed_in_updateEPNS0_7ContextEPKNS0_5LayerE",
 )
+PROCESS_ID_SYMBOLS = (
+    "__ZNK2CA6Render7Context10process_idEv",
+    "__ZN2CA6Render7Context10process_idEv",
+)
+INSECURE_PROCESS_IDS_SYMBOLS = ("-[CAWindowServer insecureProcessIds]",)
 DISPLAY_INFO_SYMBOLS = (
     "__ZN2CA12WindowServer6Server16get_display_infoEPNS_6Render6ObjectEPvS5_",
 )
@@ -43,10 +48,11 @@ class Function:
         return self.instructions[0].address
 
 
-def _extract_json(stdout: str) -> dict:
-    start = stdout.find("{")
-    if start < 0:
+def _extract_json(stdout: str) -> dict | list:
+    starts = [index for index in (stdout.find("{"), stdout.find("[")) if index >= 0]
+    if not starts:
         raise ValueError("ipsw did not emit JSON")
+    start = min(starts)
     return json.loads(stdout[start:])
 
 
@@ -88,6 +94,34 @@ def disassemble_symbol(cache: Path, symbols: Iterable[str], count: int | None = 
     return None
 
 
+def disassemble_address(cache: Path, address: int, count: int) -> Function | None:
+    command = [
+        "ipsw",
+        "dyld",
+        "disass",
+        str(cache),
+        "--vaddr",
+        hex(address),
+        "--count",
+        str(count),
+        "--quiet",
+        "--json",
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=300)
+    if completed.returncode != 0:
+        return None
+    try:
+        document = _extract_json(completed.stdout)
+        records = document if isinstance(document, list) else next(iter(document.values()))
+        instructions = tuple(
+            Instruction(int(record["addr"]), int(record["raw"]), record.get("disass", ""))
+            for record in records
+        )
+    except (KeyError, StopIteration, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return Function(hex(address), instructions) if instructions else None
+
+
 def _sign_extend(value: int, bits: int) -> int:
     sign = 1 << (bits - 1)
     return (value ^ sign) - sign
@@ -118,16 +152,93 @@ def decode_str_xzr(instruction: Instruction) -> tuple[int, int] | None:
     return (raw >> 5) & 0x1F, ((raw >> 10) & 0xFFF) << 3
 
 
-def find_legacy_update_pattern(function: Function) -> list[tuple[int, int]]:
+def _decode_mov_x_from_x0(raw: int) -> int | None:
+    if raw & 0xFFFFFFE0 != 0xAA0003E0:
+        return None
+    return raw & 0x1F
+
+
+def _decode_load_64(raw: int) -> tuple[int, int, int] | None:
+    if raw & 0xFFC00000 != 0xF9400000:
+        return None
+    return raw & 0x1F, (raw >> 5) & 0x1F, ((raw >> 10) & 0xFFF) << 3
+
+
+def _decode_unscaled_load_64(raw: int) -> tuple[int, int, int] | None:
+    if raw & 0xFFC00C00 != 0xF8400000:
+        return None
+    offset = _sign_extend((raw >> 12) & 0x1FF, 9)
+    return raw & 0x1F, (raw >> 5) & 0x1F, offset
+
+
+def _is_adrp_to_register(raw: int, register: int) -> bool:
+    return raw & 0x9F00001F == 0x90000000 | register
+
+
+def _decode_tst_update_mask(raw: int) -> int | None:
+    return {
+        0xF26C101F: 0x01F00000,
+        0xF26C141F: 0x03F00000,
+        0xF26C181F: 0x07F00000,
+        0xF26C1C1F: 0x0FF00000,
+    }.get(raw & 0xFFFFFC1F)
+
+
+def find_legacy_update_pattern(function: Function) -> list[tuple[int, int, int, int, int]]:
     instructions = function.instructions
-    results: list[tuple[int, int]] = []
+    results: list[tuple[int, int, int, int, int]] = []
+
+    updater_register = -1
+    for instruction in instructions[:32]:
+        candidate = _decode_mov_x_from_x0(instruction.raw)
+        if candidate is not None and 19 <= candidate <= 28:
+            updater_register = candidate
+            break
+    has_context_reference = any(
+        decoded is not None
+        and decoded[1] == updater_register
+        and decoded[2] == 0x18
+        for decoded in (_decode_load_64(instruction.raw) for instruction in instructions[:128])
+    )
+
     for index, instruction in enumerate(instructions):
-        masked = instruction.raw & 0xFFFFFC1F
-        if masked not in (0xF26C101F, 0xF26C141F, 0xF26C181F, 0xF26C1C1F):
+        update_mask = _decode_tst_update_mask(instruction.raw)
+        if update_mask is None:
             continue
-        for candidate in instructions[index + 1 : index + 5]:
+        flags_register = (instruction.raw >> 5) & 0x1F
+        has_layer_flags_load = any(
+            decoded is not None and decoded[0] == flags_register and decoded[2] == 0x24
+            for decoded in (
+                _decode_unscaled_load_64(candidate.raw)
+                for candidate in instructions[max(0, index - 4) : index]
+            )
+        )
+        for branch_index, candidate in enumerate(
+            instructions[index + 1 : index + 5], start=index + 1
+        ):
             if candidate.raw & 0xFF00001F == 0x54000001:
-                results.append((instruction.address, candidate.address))
+                fallthrough_overwrites_flags = (
+                    branch_index + 1 < len(instructions)
+                    and _is_adrp_to_register(
+                        instructions[branch_index + 1].raw, flags_register
+                    )
+                )
+                semantic_updater = (
+                    updater_register
+                    if has_context_reference
+                    and has_layer_flags_load
+                    and fallthrough_overwrites_flags
+                    else -1
+                )
+                results.append(
+                    (
+                        instruction.address,
+                        candidate.address,
+                        update_mask,
+                        flags_register,
+                        semantic_updater,
+                    )
+                )
     return results
 
 
@@ -167,6 +278,67 @@ def _decode_load_32(raw: int) -> tuple[int, int, int] | None:
     if raw & 0xFFC00000 != 0xB9400000:
         return None
     return raw & 0x1F, (raw >> 5) & 0x1F, ((raw >> 10) & 0xFFF) << 2
+
+
+def _decode_ldar_32(raw: int) -> tuple[int, int] | None:
+    if raw & 0xFFFFFC00 != 0x88DFFC00:
+        return None
+    return raw & 0x1F, (raw >> 5) & 0x1F
+
+
+def find_context_pid_offsets(
+    function: Function,
+    context_register: int = 0,
+    required_load_register: int | None = 0,
+    allow_direct_load: bool = False,
+) -> list[int]:
+    instructions = function.instructions[:64]
+    offsets: list[int] = []
+    for index in range(max(0, len(instructions) - 1)):
+        add = _decode_add_imm_64(instructions[index].raw)
+        load = _decode_ldar_32(instructions[index + 1].raw)
+        if add is None or load is None:
+            continue
+        add_dest, add_base, offset = add
+        load_dest, load_base = load
+        if (
+            add_base == context_register
+            and 0x40 <= offset <= 0x400
+            and (required_load_register is None or load_dest == required_load_register)
+            and load_base == add_dest
+            and offset not in offsets
+        ):
+            offsets.append(offset)
+
+    if allow_direct_load:
+        for instruction in instructions[:32]:
+            load = _decode_load_32(instruction.raw)
+            if load is None:
+                continue
+            load_dest, load_base, offset = load
+            if (
+                load_base == context_register
+                and 0x40 <= offset <= 0x400
+                and (required_load_register is None or load_dest == required_load_register)
+                and offset not in offsets
+            ):
+                offsets.append(offset)
+    return offsets
+
+
+def find_inlined_context_pid_offsets(cache: Path, caller: Function) -> list[int]:
+    offsets: list[int] = []
+    for instruction in caller.instructions[:128]:
+        target = decode_bl_target(instruction)
+        if target is None:
+            continue
+        callee = disassemble_address(cache, target, 64)
+        if callee is None:
+            continue
+        for offset in find_context_pid_offsets(callee, context_register=1, required_load_register=None):
+            if offset not in offsets:
+                offsets.append(offset)
+    return offsets
 
 
 def _decode_store_32(raw: int) -> tuple[int, int, int] | None:
@@ -255,12 +427,16 @@ def main() -> int:
     if not caches:
         parser.error("no main arm64/arm64e DSC files found")
 
-    print("cache\tprepare\tallowed\tupdate-pattern\tdisplay-pattern\tresult", flush=True)
+    print(
+        "cache\tprepare\tallowed\tcontext-pid\tupdate-pattern\tdisplay-pattern\tresult",
+        flush=True,
+    )
     failures = 0
     for cache in caches:
         label = cache.parent.name
         prepare = disassemble_symbol(cache, PREPARE_SYMBOLS)
-        allowed = disassemble_symbol(cache, ALLOWED_SYMBOLS, count=1)
+        allowed = disassemble_symbol(cache, ALLOWED_SYMBOLS, count=64)
+        process_id = disassemble_symbol(cache, PROCESS_ID_SYMBOLS, count=64)
         display = disassemble_symbol(cache, DISPLAY_INFO_SYMBOLS)
 
         legacy_hits = find_legacy_update_pattern(prepare) if prepare else []
@@ -268,13 +444,31 @@ def main() -> int:
             find_allowed_update_pattern(prepare, allowed.address) if prepare and allowed else []
         )
         display_hits = find_display_flags_pattern(display) if display else []
+        context_pid_offsets = (
+            find_context_pid_offsets(process_id, allow_direct_load=True)
+            if process_id
+            else []
+        )
+        if allowed_hits and not context_pid_offsets:
+            insecure_process_ids = disassemble_symbol(
+                cache, INSECURE_PROCESS_IDS_SYMBOLS, count=128
+            )
+            if insecure_process_ids:
+                context_pid_offsets = find_inlined_context_pid_offsets(cache, insecure_process_ids)
 
         if len(allowed_hits) == 1:
             call, branch, store, kind, base, offset = allowed_hits[0]
             update_text = f"allowed/{kind}@0x{store:x}[x{base}+0x{offset:x}]"
         elif len(legacy_hits) == 1:
-            _, branch = legacy_hits[0]
-            update_text = f"legacy/B.NE@0x{branch:x}"
+            _, branch, update_mask, flags_register, updater_register = legacy_hits[0]
+            if updater_register >= 0:
+                update_text = (
+                    f"legacy/B.NE@0x{branch:x}"
+                    f"[mask=0x{update_mask:x},flags=x{flags_register},"
+                    f"updater=x{updater_register},ctx=+0x18]"
+                )
+            else:
+                update_text = f"legacy/B.NE@0x{branch:x}"
         elif allowed_hits or legacy_hits:
             update_text = f"ambiguous(a={len(allowed_hits)},l={len(legacy_hits)})"
         else:
@@ -288,12 +482,36 @@ def main() -> int:
         else:
             display_text = "missing"
 
-        success = (len(allowed_hits) == 1 or len(legacy_hits) == 1) and len(display_hits) == 1
+        if allowed is None:
+            context_pid_text = "n/a"
+        elif len(context_pid_offsets) == 1:
+            context_pid_text = f"0x{context_pid_offsets[0]:x}"
+        elif context_pid_offsets:
+            context_pid_text = f"ambiguous({','.join(f'0x{offset:x}' for offset in context_pid_offsets)})"
+        else:
+            context_pid_text = "missing"
+
+        modern_success = (
+            len(allowed_hits) == 1
+            and len(context_pid_offsets) == 1
+        )
+        legacy_process_aware = (
+            len(legacy_hits) == 1
+            and legacy_hits[0][4] >= 0
+            and len(context_pid_offsets) == 1
+        )
+        legacy_success = (
+            len(allowed_hits) == 0
+            and len(legacy_hits) == 1
+            and (allowed is None or legacy_process_aware)
+        )
+        success = (modern_success or legacy_success) and len(display_hits) == 1
         if not success:
             failures += 1
         print(
             f"{label}\t{short_symbol(prepare.symbol if prepare else None)}\t"
-            f"{short_symbol(allowed.symbol if allowed else None)}\t{update_text}\t"
+            f"{short_symbol(allowed.symbol if allowed else None)}\t{context_pid_text}\t"
+            f"{update_text}\t"
             f"{display_text}\t{'PASS' if success else 'FAIL'}",
             flush=True,
         )

@@ -8,11 +8,15 @@
 
 "Please support our paid works, thank you!" = "请支持我们的付费作品，谢谢！";
 
+"Protect System UI" = "保护系统界面";
+
 "Restart Rendering Services" = "重启渲染服务";
 
 "Restart backboardd and SpringBoard to reload rendering-related settings immediately." = "重启 backboardd 和 SpringBoard，让渲染相关设置立即重新载入。";
 
 "Reveal Hidden Content" = "显示被隐藏的画面";
+
+"When enabled, screenshots and recordings avoid showing system interface elements that should remain hidden." = "开启后，截图和录屏会尽量避免显示本应隐藏的系统界面。";
 
 "When disabled, Unseen will not handle hidden content, screenshot notices, or screen recording state. Restart rendering services after changing these settings." = "关闭后，Unseen 不会处理隐藏画面、截图通知和录屏状态。更改设置后请重启渲染服务使其生效。";
 

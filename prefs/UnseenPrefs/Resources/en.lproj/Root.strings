@@ -8,11 +8,15 @@
 
 "Please support our paid works, thank you!" = "Please support our paid works, thank you!";
 
+"Protect System UI" = "Protect System UI";
+
 "Restart Rendering Services" = "Restart Rendering Services";
 
 "Restart backboardd and SpringBoard to reload rendering-related settings immediately." = "Restart backboardd and SpringBoard to reload rendering-related settings immediately.";
 
 "Reveal Hidden Content" = "Reveal Hidden Content";
+
+"When enabled, screenshots and recordings avoid showing system interface elements that should remain hidden." = "When enabled, screenshots and recordings avoid showing system interface elements that should remain hidden.";
 
 "When disabled, Unseen will not handle hidden content, screenshot notices, or screen recording state. Restart rendering services after changing these settings." = "When disabled, Unseen will not handle hidden content, screenshot notices, or screen recording state. Restart rendering services after changing these settings.";
 

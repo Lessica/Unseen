@@ -52,6 +52,26 @@
 				<key>label</key>
 				<string></string>
 				<key>footerText</key>
+				<string>When enabled, screenshots and recordings avoid showing system interface elements that should remain hidden.</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSSwitchCell</string>
+				<key>default</key>
+				<false/>
+				<key>defaults</key>
+				<string>com.82flex.unseen</string>
+				<key>key</key>
+				<string>ProcessAwareUpdateMaskBypassEnabled</string>
+				<key>label</key>
+				<string>Protect System UI</string>
+			</dict>
+			<dict>
+				<key>cell</key>
+				<string>PSGroupCell</string>
+				<key>label</key>
+				<string></string>
+				<key>footerText</key>
 				<string>When enabled, apps can usually no longer learn when you take a screenshot through the system screenshot notification.</string>
 			</dict>
 			<dict>

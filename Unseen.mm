@@ -8,6 +8,7 @@
 #import <objc/runtime.h>
 #import <os/log.h>
 #import <pthread.h>
+#import <ptrauth.h>
 #import <stdatomic.h>
 #import <stdbool.h>
 #import <stdint.h>
@@ -19,6 +20,7 @@
 
 extern "C" bool gUnseenEnabled = true;
 extern "C" bool gUnseenDisableUpdateMaskPatchEnabled = true;
+extern "C" bool gUnseenProcessAwareUpdateMaskBypassEnabled = false;
 extern "C" bool gUnseenScreenshotActionFilterEnabled = true;
 extern "C" bool gUnseenCaptureStateMaskEnabled = true;
 
@@ -94,12 +96,16 @@ static void load_preferences(void) {
 
     gUnseenEnabled = bool_preference(prefs, @"Enabled", YES);
     gUnseenDisableUpdateMaskPatchEnabled = bool_preference(prefs, @"DisableUpdateMaskPatchEnabled", YES);
+    gUnseenProcessAwareUpdateMaskBypassEnabled =
+        bool_preference(prefs, @"ProcessAwareUpdateMaskBypassEnabled", NO);
     gUnseenScreenshotActionFilterEnabled = bool_preference(prefs, @"ScreenshotActionFilterEnabled", YES);
     gUnseenCaptureStateMaskEnabled = bool_preference(prefs, @"CaptureStateMaskEnabled", YES);
 
     os_log(tweak_log(),
-           "Preferences applied enabled=%{public}s updateMask=%{public}s screenshot=%{public}s capture=%{public}s",
+           "Preferences applied enabled=%{public}s updateMask=%{public}s processAware=%{public}s "
+           "screenshot=%{public}s capture=%{public}s",
            gUnseenEnabled ? "YES" : "NO", gUnseenDisableUpdateMaskPatchEnabled ? "YES" : "NO",
+           gUnseenProcessAwareUpdateMaskBypassEnabled ? "YES" : "NO",
            gUnseenScreenshotActionFilterEnabled ? "YES" : "NO", gUnseenCaptureStateMaskEnabled ? "YES" : "NO");
 }
 
@@ -239,9 +245,24 @@ static bool client_is_target_audit_token(audit_token_t token, pid_t *pidOut, cha
 
 #pragma mark - Instruction Decode
 
-static inline int is_tst_xn_disableUpdateMask(uint32_t insn) {
+static inline uint64_t decode_tst_disableUpdateMask(uint32_t insn) {
     uint32_t masked = insn & 0xFFFFFC1F;
-    return masked == 0xF26C101F || masked == 0xF26C141F || masked == 0xF26C181F || masked == 0xF26C1C1F;
+    switch (masked) {
+        case 0xF26C101F:
+            return 0x01F00000ULL;
+        case 0xF26C141F:
+            return 0x03F00000ULL;
+        case 0xF26C181F:
+            return 0x07F00000ULL;
+        case 0xF26C1C1F:
+            return 0x0FF00000ULL;
+        default:
+            return 0;
+    }
+}
+
+static inline int is_tst_xn_disableUpdateMask(uint32_t insn) {
+    return decode_tst_disableUpdateMask(insn) != 0;
 }
 
 static inline int is_b_ne(uint32_t insn) { return (insn & 0xFF00001F) == 0x54000001; }
@@ -301,6 +322,56 @@ static inline int decode_unsigned_store_64(uint32_t insn, uint8_t *rt, uint8_t *
         *offset = ((insn >> 10) & 0xFFF) << 3;
     }
     return 1;
+}
+
+static inline int decode_unsigned_load_64(uint32_t insn, uint8_t *rt, uint8_t *rn, uint32_t *offset) {
+    if ((insn & 0xFFC00000) != 0xF9400000) {
+        return 0;
+    }
+    if (rt) {
+        *rt = insn & 0x1F;
+    }
+    if (rn) {
+        *rn = (insn >> 5) & 0x1F;
+    }
+    if (offset) {
+        *offset = ((insn >> 10) & 0xFFF) << 3;
+    }
+    return 1;
+}
+
+static inline int decode_unscaled_load_64(uint32_t insn, uint8_t *rt, uint8_t *rn, int32_t *offset) {
+    if ((insn & 0xFFC00C00) != 0xF8400000) {
+        return 0;
+    }
+    if (rt) {
+        *rt = insn & 0x1F;
+    }
+    if (rn) {
+        *rn = (insn >> 5) & 0x1F;
+    }
+    if (offset) {
+        int32_t immediate = (int32_t)((insn >> 12) & 0x1FF);
+        if (immediate & 0x100) {
+            immediate |= ~0x1FF;
+        }
+        *offset = immediate;
+    }
+    return 1;
+}
+
+static inline int decode_mov_x_from_x0(uint32_t insn, uint8_t *rd) {
+    if ((insn & 0xFFFFFFE0) != 0xAA0003E0) {
+        return 0;
+    }
+    if (rd) {
+        *rd = insn & 0x1F;
+    }
+    return 1;
+}
+
+static inline int is_adrp_to_register(uint32_t insn, uint8_t rd) {
+    return (insn & 0x9F00001F) == (0x90000000 | rd);
 }
 
 static inline int decode_unsigned_load_32(uint32_t insn, uint8_t *rt, uint8_t *rn, uint32_t *offset) {
@@ -403,6 +474,25 @@ static void *resolve_allowed_in_update(void) {
     return NULL;
 }
 
+static void *resolve_context_process_id(void) {
+    const char *image = "/System/Library/Frameworks/QuartzCore.framework/QuartzCore";
+    const char *candidates[] = {
+        "__ZNK2CA6Render7Context10process_idEv",
+        "__ZN2CA6Render7Context10process_idEv",
+    };
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        void *sym = DobbySymbolResolver(image, candidates[i]);
+        if (sym) {
+            os_log(patchfinder_log(), "Resolved Context::process_id via DobbySymbolResolver: %p", sym);
+            return sym;
+        }
+    }
+
+    os_log_info(patchfinder_log(), "Context::process_id is not exported; trying the inlined pattern");
+    return NULL;
+}
+
 static void *resolve_get_display_info(void) {
     const char *image = "/System/Library/Frameworks/QuartzCore.framework/QuartzCore";
     const char *symbol = "__ZN2CA12WindowServer6Server16get_display_infoEPNS_6Render6ObjectEPvS5_";
@@ -499,80 +589,518 @@ static uint32_t find_get_display_info_flags_offset(void) {
     return 0;
 }
 
-static void *find_disableUpdateMask_branch(void) {
-    void *func_start = resolve_prepare_layer0();
-    if (!func_start) {
-        os_log_error(patchfinder_log(), "Cannot resolve prepare_layer0 - aborting");
-        return NULL;
+typedef struct {
+    const uint32_t *call;
+    const uint32_t *clearStore;
+} AllowedUpdateCallsite;
+
+typedef struct {
+    const uint32_t *test;
+    const uint32_t *branch;
+    uint64_t updateMask;
+    uint8_t flagsRegister;
+    uint8_t updaterRegister;
+} LegacyUpdateCallsite;
+
+static bool find_allowed_update_callsite(void *func_start, void *allowed_in_update, AllowedUpdateCallsite *result) {
+    if (!func_start || !allowed_in_update || !result) {
+        return false;
+    }
+    const size_t max_scan_size = 65536;
+    const uint32_t *insns = (const uint32_t *)func_start;
+    size_t count = max_scan_size / sizeof(uint32_t);
+    for (size_t i = 0; i + 8 < count; i++) {
+        void *target = decode_bl_target(&insns[i]);
+        if (target != allowed_in_update) {
+            continue;
+        }
+
+        os_log_info(patchfinder_log(), "Found allowed_in_update call at %p", (void *)&insns[i]);
+        for (size_t j = 1; j <= 4 && (i + j + 1) < count; j++) {
+            const char *branchKind = NULL;
+            const uint32_t *branchTarget = decode_nonzero_w0_branch_target(&insns[i + j], &branchKind);
+            if (!branchTarget) {
+                continue;
+            }
+
+            for (size_t k = j + 1; k <= j + 3 && (i + k) < count; k++) {
+                uint8_t storeRt = 0;
+                uint8_t storeRn = 0;
+                uint32_t storeOffset = 0;
+                if (!decode_unsigned_store_64(insns[i + k], &storeRt, &storeRn, &storeOffset) || storeRt != 31) {
+                    continue;
+                }
+                if (branchTarget != &insns[i + k + 1]) {
+                    continue;
+                }
+
+                result->call = &insns[i];
+                result->clearStore = &insns[i + k];
+                os_log(patchfinder_log(),
+                       "Found allowed_in_update %s/clear-store path at %p (base X%u + 0x%X, offset +%zu from call)",
+                       branchKind, (void *)result->clearStore, storeRn, storeOffset, k);
+                return true;
+            }
+
+            os_log_error(patchfinder_log(),
+                         "allowed_in_update %s found but no matching fallthrough STR XZR clear", branchKind);
+        }
+    }
+
+    os_log_error(patchfinder_log(), "allowed_in_update callsite pattern not found in prepare_layer0");
+    return false;
+}
+
+static inline int decode_ldar_32(uint32_t insn, uint8_t *rt, uint8_t *rn) {
+    if ((insn & 0xFFFFFC00) != 0x88DFFC00) {
+        return 0;
+    }
+    if (rt) {
+        *rt = insn & 0x1F;
+    }
+    if (rn) {
+        *rn = (insn >> 5) & 0x1F;
+    }
+    return 1;
+}
+
+static inline void *canonical_function_pointer(void *address) {
+#if __has_feature(ptrauth_calls)
+    return ptrauth_strip(address, ptrauth_key_function_pointer);
+#else
+    return address;
+#endif
+}
+
+static uint32_t find_cached_context_pid_offset(void *function, uint8_t contextRegister,
+                                               int requiredLoadRegister) {
+    if (!function) {
+        return 0;
+    }
+
+    const uint32_t *insns = (const uint32_t *)canonical_function_pointer(function);
+    for (size_t i = 0; i + 1 < 64; i++) {
+        uint8_t addRd = 0;
+        uint8_t addRn = 0;
+        uint32_t addImm = 0;
+        if (!decode_add_immediate_64(insns[i], &addRd, &addRn, &addImm) || addRn != contextRegister ||
+            addImm < 0x40 ||
+            addImm > 0x400) {
+            continue;
+        }
+
+        uint8_t loadRt = 0;
+        uint8_t loadRn = 0;
+        if (decode_ldar_32(insns[i + 1], &loadRt, &loadRn) && loadRn == addRd &&
+            (requiredLoadRegister < 0 || loadRt == (uint8_t)requiredLoadRegister)) {
+            return addImm;
+        }
+    }
+
+    // iOS 16's Context::process_id() starts with a direct
+    // LDR W0, [X0, #cached_pid]. Later releases changed this to ADD+LDAR.
+    for (size_t i = 0; contextRegister == 0 && requiredLoadRegister == 0 && i < 32; i++) {
+        uint8_t loadRt = 0;
+        uint8_t loadRn = 0;
+        uint32_t loadOffset = 0;
+        if (decode_unsigned_load_32(insns[i], &loadRt, &loadRn, &loadOffset) &&
+            loadRn == contextRegister && loadOffset >= 0x40 && loadOffset <= 0x400 &&
+            (requiredLoadRegister < 0 || loadRt == (uint8_t)requiredLoadRegister)) {
+            return loadOffset;
+        }
+    }
+
+    return 0;
+}
+
+static uint32_t find_context_pid_offset_from_insecure_process_ids(void) {
+    Class windowServerClass = objc_getClass("CAWindowServer");
+    Method method = windowServerClass
+                        ? class_getInstanceMethod(windowServerClass, sel_registerName("insecureProcessIds"))
+                        : NULL;
+    void *implementation = method ? (void *)method_getImplementation(method) : NULL;
+    if (!implementation) {
+        return 0;
+    }
+
+    // iOS 18 inlines Context::process_id() into an internal helper called by
+    // this Objective-C method. Follow direct calls and accept only one semantic
+    // ADD Context,#offset; LDAR sequence, so an unexpected layout fails closed.
+    const uint32_t *insns = (const uint32_t *)canonical_function_pointer(implementation);
+    uint32_t foundOffset = 0;
+    for (size_t i = 0; i < 128; i++) {
+        void *target = decode_bl_target(&insns[i]);
+        if (!target) {
+            continue;
+        }
+        uint32_t candidate = find_cached_context_pid_offset(target, 1, -1);
+        if (candidate == 0) {
+            continue;
+        }
+        if (foundOffset != 0 && foundOffset != candidate) {
+            os_log_error(patchfinder_log(), "Ambiguous inlined Render::Context PID offsets 0x%X and 0x%X",
+                         foundOffset, candidate);
+            return 0;
+        }
+        foundOffset = candidate;
+    }
+    return foundOffset;
+}
+
+static uint32_t find_render_context_pid_offset(void) {
+    uint32_t offset = find_cached_context_pid_offset(resolve_context_process_id(), 0, 0);
+    if (offset == 0) {
+        offset = find_context_pid_offset_from_insecure_process_ids();
+    }
+    if (offset != 0) {
+        os_log(patchfinder_log(), "Resolved Render::Context cached PID offset 0x%X", offset);
+        return offset;
+    }
+
+    os_log_error(patchfinder_log(), "Could not resolve Render::Context cached PID offset");
+    return 0;
+}
+
+static bool find_legacy_update_callsite(void *func_start, LegacyUpdateCallsite *result) {
+    if (!func_start || !result) {
+        return false;
     }
 
     const size_t max_scan_size = 65536;
     const uint32_t *insns = (const uint32_t *)func_start;
     size_t count = max_scan_size / sizeof(uint32_t);
 
-    os_log_info(patchfinder_log(), "Scanning prepare_layer0 at %p (%zu instructions max)", func_start, count);
+    // x0 is Updater *. Apple moves it into a callee-saved register in the
+    // prologue; the chosen register changed from X23 to X28 across iOS 16.
+    uint8_t updaterRegister = 0xFF;
+    for (size_t i = 0; i < 32 && i < count; i++) {
+        uint8_t candidate = 0;
+        if (decode_mov_x_from_x0(insns[i], &candidate) && candidate >= 19 && candidate <= 28) {
+            updaterRegister = candidate;
+            break;
+        }
+    }
+    // Verify the inferred Updater register against its Context * field. This
+    // keeps the instrumentation from relying on a version-specific X register.
+    bool hasContextReference = false;
+    for (size_t i = 0; updaterRegister != 0xFF && i < 128 && i < count; i++) {
+        uint8_t loadRt = 0;
+        uint8_t loadRn = 0;
+        uint32_t loadOffset = 0;
+        if (decode_unsigned_load_64(insns[i], &loadRt, &loadRn, &loadOffset) &&
+            loadRn == updaterRegister && loadOffset == 0x18) {
+            hasContextReference = true;
+            break;
+        }
+    }
+    // Older QuartzCore builds test disableUpdateMask directly instead of
+    // consulting allowed_in_update.
+    for (size_t i = 0; i + 4 < count; i++) {
+        if (!is_tst_xn_disableUpdateMask(insns[i])) {
+            continue;
+        }
 
-    void *allowed_in_update = resolve_allowed_in_update();
-    if (allowed_in_update) {
-        for (size_t i = 0; i + 8 < count; i++) {
-            void *target = decode_bl_target(&insns[i]);
-            if (target != allowed_in_update) {
+        uint8_t flagsRegister = (insns[i] >> 5) & 0x1F;
+        bool hasLayerFlagsLoad = false;
+        for (size_t distance = 1; distance <= 4 && distance <= i; distance++) {
+            uint8_t loadRt = 0;
+            uint8_t loadRn = 0;
+            int32_t loadOffset = 0;
+            if (decode_unscaled_load_64(insns[i - distance], &loadRt, &loadRn, &loadOffset) &&
+                loadRt == flagsRegister && loadOffset == 0x24) {
+                hasLayerFlagsLoad = true;
+                break;
+            }
+        }
+        for (size_t j = 1; j <= 4 && (i + j + 1) < count; j++) {
+            if (!is_b_ne(insns[i + j])) {
                 continue;
             }
 
-            os_log_info(patchfinder_log(), "Found allowed_in_update call at %p", (void *)&insns[i]);
-            for (size_t j = 1; j <= 4 && (i + j + 1) < count; j++) {
-                const char *branchKind = NULL;
-                const uint32_t *branchTarget = decode_nonzero_w0_branch_target(&insns[i + j], &branchKind);
-                if (!branchTarget) {
-                    continue;
-                }
-
-                for (size_t k = j + 1; k <= j + 3 && (i + k) < count; k++) {
-                    uint8_t storeRt = 0;
-                    uint8_t storeRn = 0;
-                    uint32_t storeOffset = 0;
-                    if (!decode_unsigned_store_64(insns[i + k], &storeRt, &storeRn, &storeOffset) || storeRt != 31) {
-                        continue;
-                    }
-                    if (branchTarget != &insns[i + k + 1]) {
-                        continue;
-                    }
-
-                    void *store_addr = (void *)&insns[i + k];
-                    os_log(patchfinder_log(),
-                           "Found allowed_in_update %s/clear-store path at %p (base X%u + 0x%X, offset +%zu from call)",
-                           branchKind, store_addr, storeRn, storeOffset, k);
-                    return store_addr;
-                }
-
-                os_log_error(patchfinder_log(),
-                             "allowed_in_update %s found but no matching fallthrough STR XZR clear", branchKind);
+            result->test = &insns[i];
+            result->branch = &insns[i + j];
+            result->updateMask = decode_tst_disableUpdateMask(insns[i]);
+            result->flagsRegister = flagsRegister;
+            bool overwritesFlagsOnFallthrough =
+                is_adrp_to_register(insns[i + j + 1], flagsRegister);
+            result->updaterRegister =
+                hasLayerFlagsLoad && overwritesFlagsOnFallthrough && hasContextReference
+                    ? updaterRegister
+                    : 0xFF;
+            if (result->updaterRegister <= 28) {
+                os_log(patchfinder_log(),
+                       "Found process-aware legacy TST/B.NE at %p/%p (flags X%u, Updater X%u)",
+                       (void *)result->test, (void *)result->branch, flagsRegister, updaterRegister);
+            } else {
+                os_log(patchfinder_log(),
+                       "Found original legacy TST/B.NE at %p/%p without process-aware context",
+                       (void *)result->test, (void *)result->branch);
             }
+            return true;
         }
     }
 
-    // Older QuartzCore builds test disableUpdateMask directly instead of
-    // consulting allowed_in_update. Keep that exact legacy sequence as fallback.
-    for (size_t i = 0; i + 4 < count; i++) {
-        if (is_tst_xn_disableUpdateMask(insns[i])) {
-            os_log_info(patchfinder_log(), "Found TST at %p (insn=0x%x)", (void *)&insns[i], insns[i]);
-            for (size_t j = 1; j <= 4 && (i + j) < count; j++) {
-                if (is_b_ne(insns[i + j])) {
-                    void *branch_addr = (void *)&insns[i + j];
-                    os_log(patchfinder_log(), "Found B.NE at %p (offset +%zu from TST)", branch_addr, j);
-                    return branch_addr;
-                }
-            }
-            os_log_error(patchfinder_log(), "TST found but no B.NE within 4 instructions");
-        }
-    }
-
-    os_log_error(patchfinder_log(), "Pattern not found in prepare_layer0 (%zu instructions scanned)", count);
-    return NULL;
+    os_log_error(patchfinder_log(), "Legacy pattern not found in prepare_layer0 (%zu instructions scanned)", count);
+    return false;
 }
 
 #pragma mark - Disable Update Mask Patch
+
+typedef bool (*AllowedInUpdateIMP)(void *update, void *context, const void *layer);
+
+static AllowedInUpdateIMP orig_allowed_in_update;
+static uintptr_t prepare_allowed_return_address;
+static uint32_t render_context_pid_offset;
+static uint64_t legacy_update_mask;
+static uint8_t legacy_flags_register;
+static uint8_t legacy_updater_register;
+static pid_t springboard_pid;
+static id springboard_shell_observer;
+static id springboard_shell_observer_registration;
+
+static id system_shell_sentinel(void) {
+    Class sentinelClass = objc_getClass("BKSystemShellSentinel");
+    SEL sharedInstanceSelector = sel_registerName("sharedInstance");
+    if (!sentinelClass || !class_getClassMethod(sentinelClass, sharedInstanceSelector)) {
+        return nil;
+    }
+    return ((id(*)(id, SEL))objc_msgSend)((id)sentinelClass, sharedInstanceSelector);
+}
+
+static pid_t springboard_pid_from_shell_descriptor(id descriptor) {
+    SEL bundleIdentifierSelector = sel_registerName("bundleIdentifier");
+    SEL pidSelector = sel_registerName("pid");
+    if (!descriptor || ![descriptor respondsToSelector:bundleIdentifierSelector] ||
+        ![descriptor respondsToSelector:pidSelector]) {
+        return 0;
+    }
+
+    NSString *bundleIdentifier =
+        ((id(*)(id, SEL))objc_msgSend)(descriptor, bundleIdentifierSelector);
+    if (![bundleIdentifier isEqualToString:@"com.apple.springboard"]) {
+        return 0;
+    }
+    pid_t pid = ((pid_t(*)(id, SEL))objc_msgSend)(descriptor, pidSelector);
+    return pid > 0 ? pid : 0;
+}
+
+static void publish_springboard_pid(pid_t found, const char *reason) {
+    pid_t previous = __atomic_exchange_n(&springboard_pid, found, __ATOMIC_RELEASE);
+    if (previous != found) {
+        os_log(tweak_log(), "SpringBoard system-shell PID %{public}d -> %{public}d (%{public}s)", previous,
+               found, reason);
+    }
+}
+
+static void refresh_springboard_pid_from_system_shells(const char *reason) {
+    id sentinel = system_shell_sentinel();
+    SEL systemShellsSelector = sel_registerName("systemShells");
+    if (!sentinel || ![sentinel respondsToSelector:systemShellsSelector]) {
+        publish_springboard_pid(0, reason);
+        return;
+    }
+
+    NSArray *shells = ((id(*)(id, SEL))objc_msgSend)(sentinel, systemShellsSelector);
+    pid_t found = 0;
+    for (id descriptor in shells) {
+        found = springboard_pid_from_shell_descriptor(descriptor);
+        if (found > 0) {
+            break;
+        }
+    }
+    publish_springboard_pid(found, reason);
+}
+
+@interface UnseenSystemShellObserver : NSObject
+@end
+
+@implementation UnseenSystemShellObserver
+
+- (void)systemShellWillBootstrap {
+    publish_springboard_pid(0, "system shell will bootstrap");
+}
+
+- (void)systemShellDidFinishLaunching:(id)descriptor {
+    pid_t pid = springboard_pid_from_shell_descriptor(descriptor);
+    if (pid > 0) {
+        publish_springboard_pid(pid, "system shell finished launching");
+    } else {
+        refresh_springboard_pid_from_system_shells("system shell finished launching");
+    }
+}
+
+- (void)systemShellChangedWithPrimary:(id)descriptor {
+    // Sentinel invokes observers while holding its state lock. The callback
+    // argument is the new primary descriptor; querying systemShells here would
+    // recursively acquire that lock and trap.
+    publish_springboard_pid(springboard_pid_from_shell_descriptor(descriptor),
+                            "primary system shell changed");
+}
+
+@end
+
+
+static void start_springboard_system_shell_observer(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        // Defer until backboardd's main queue is running so the existing system
+        // shell sentinel owns initialization and callback serialization.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id sentinel = system_shell_sentinel();
+            SEL addObserverSelector = sel_registerName("addSystemShellObserver:reason:");
+            if (!sentinel || ![sentinel respondsToSelector:addObserverSelector]) {
+                os_log_error(tweak_log(), "BKSystemShellSentinel observer API unavailable");
+                return;
+            }
+
+            springboard_shell_observer = [UnseenSystemShellObserver new];
+            springboard_shell_observer_registration =
+                ((id(*)(id, SEL, id, id))objc_msgSend)(sentinel, addObserverSelector,
+                                                       springboard_shell_observer,
+                                                       @"Unseen render ownership filter");
+            if (!springboard_shell_observer_registration) {
+                os_log_error(tweak_log(), "BKSystemShellSentinel observer registration failed");
+                springboard_shell_observer = nil;
+                return;
+            }
+            refresh_springboard_pid_from_system_shells("initial system shell state");
+        });
+    });
+}
+
+static inline uintptr_t canonical_return_address(void *address) {
+#if __has_feature(ptrauth_calls)
+    return (uintptr_t)ptrauth_strip(address, ptrauth_key_return_address);
+#else
+    return (uintptr_t)address;
+#endif
+}
+
+static inline bool context_is_allowed_to_bypass_update_mask(const void *context) {
+    if (!context || render_context_pid_offset == 0) {
+        return false;
+    }
+
+    // The render hot path is deliberately limited to cached integer loads.
+    // Unknown ownership fails closed and preserves QuartzCore's restriction.
+    pid_t ownerPid = __atomic_load_n(
+        (const pid_t *)((const uint8_t *)context + render_context_pid_offset), __ATOMIC_ACQUIRE);
+    pid_t springBoardPid = __atomic_load_n(&springboard_pid, __ATOMIC_ACQUIRE);
+    return ownerPid > 0 && springBoardPid > 0 && ownerPid != springBoardPid;
+}
+
+static bool repl_allowed_in_update(void *update, void *context, const void *layer) {
+    uintptr_t caller = canonical_return_address(__builtin_return_address(0));
+    bool allowed = orig_allowed_in_update(update, context, layer);
+
+    // allowed_in_update has another QuartzCore caller. Reproduce the old
+    // prepare_layer0-only patch scope instead of changing the helper globally.
+    if (allowed || caller != prepare_allowed_return_address || !context) {
+        return allowed;
+    }
+
+    return context_is_allowed_to_bypass_update_mask(context);
+}
+
+static bool install_scoped_allowed_in_update_hook(void *allowed_in_update,
+                                                  const AllowedUpdateCallsite *callsite) {
+    if (!allowed_in_update || !callsite || !callsite->call) {
+        return false;
+    }
+    uint32_t pidOffset = find_render_context_pid_offset();
+    if (pidOffset == 0) {
+        return false;
+    }
+
+    prepare_allowed_return_address = canonical_return_address((void *)(callsite->call + 1));
+    render_context_pid_offset = pidOffset;
+    start_springboard_system_shell_observer();
+    int ret = DobbyHook(allowed_in_update, (dobby_dummy_func_t)repl_allowed_in_update,
+                        (dobby_dummy_func_t *)&orig_allowed_in_update);
+    if (ret != 0 || !orig_allowed_in_update) {
+        os_log_error(tweak_log(), "DobbyHook allowed_in_update failed at %p (ret=%d)", allowed_in_update, ret);
+        return false;
+    }
+
+    os_log(tweak_log(),
+           "Installed scoped allowed_in_update hook at %p (caller return=%p, context PID=0x%X)",
+           allowed_in_update, (void *)prepare_allowed_return_address, render_context_pid_offset);
+    return true;
+}
+
+static void legacy_update_mask_instrumentation(void *address, DobbyRegisterContext *registers) {
+    (void)address;
+    if (!registers || legacy_flags_register > 28 || legacy_updater_register > 28) {
+        return;
+    }
+
+    uint64_t flags = registers->general.x[legacy_flags_register];
+    if ((flags & legacy_update_mask) == 0) {
+        return;
+    }
+
+    uintptr_t updater = registers->general.x[legacy_updater_register];
+    if (updater == 0) {
+        return;
+    }
+    const void *context = __atomic_load_n(
+        (void *const *)(updater + 0x18), __ATOMIC_ACQUIRE);
+    if (context_is_allowed_to_bypass_update_mask(context)) {
+        // Preserve unrelated Layer flags and clear exactly the immediate mask
+        // encoded by this TST for this one decision.
+        registers->general.x[legacy_flags_register] = flags & ~legacy_update_mask;
+    }
+}
+
+static bool install_legacy_process_aware_update_mask(const LegacyUpdateCallsite *callsite) {
+    if (!callsite || !callsite->test || callsite->updateMask == 0 || callsite->flagsRegister > 28 ||
+        callsite->updaterRegister > 28) {
+        return false;
+    }
+    uint32_t pidOffset = find_render_context_pid_offset();
+    if (pidOffset == 0) {
+        return false;
+    }
+
+    render_context_pid_offset = pidOffset;
+    legacy_update_mask = callsite->updateMask;
+    legacy_flags_register = callsite->flagsRegister;
+    legacy_updater_register = callsite->updaterRegister;
+    start_springboard_system_shell_observer();
+    int ret = DobbyInstrument((void *)callsite->test, legacy_update_mask_instrumentation);
+    if (ret != 0) {
+        os_log_error(tweak_log(), "DobbyInstrument legacy update-mask TST failed at %p (ret=%d)",
+                     (void *)callsite->test, ret);
+        return false;
+    }
+
+    os_log(tweak_log(),
+           "Installed process-aware legacy update-mask instrumentation at %p "
+           "(mask=0x%llX, flags X%u, Updater X%u, context PID=0x%X)",
+           (void *)callsite->test, (unsigned long long)callsite->updateMask, callsite->flagsRegister,
+           callsite->updaterRegister,
+           render_context_pid_offset);
+    return true;
+}
+
+static bool patch_update_mask_instruction_to_nop(void *target, const char *path) {
+    if (!target) {
+        return false;
+    }
+    uint32_t nop = 0xD503201F;
+    int ret = DobbyCodePatch(target, (uint8_t *)&nop, sizeof(nop));
+    if (ret != 0) {
+        os_log_error(tweak_log(), "DobbyCodePatch failed for %{public}s at %p (ret=%d)", path, target, ret);
+        return false;
+    }
+    os_log(tweak_log(), "Installed original %{public}s update-mask patch at %p -> NOP", path, target);
+    return true;
+}
+
+static bool system_supports_process_aware_update_mask(void) {
+    NSOperatingSystemVersion version = NSProcessInfo.processInfo.operatingSystemVersion;
+    return version.majorVersion >= 16;
+}
 
 static void install_disableUpdateMask_patch(void) {
     if (!gUnseenDisableUpdateMaskPatchEnabled) {
@@ -580,18 +1108,54 @@ static void install_disableUpdateMask_patch(void) {
         return;
     }
 
-    void *branch_addr = find_disableUpdateMask_branch();
-    if (!branch_addr) {
-        os_log_error(tweak_log(), "Patch target not found - aborting");
+    void *prepare_layer0 = resolve_prepare_layer0();
+    if (!prepare_layer0) {
+        os_log_error(tweak_log(), "Cannot resolve prepare_layer0 - aborting");
         return;
     }
 
-    uint32_t nop = 0xD503201F;
-    int ret = DobbyCodePatch(branch_addr, (uint8_t *)&nop, sizeof(nop));
-    if (ret == 0) {
-        os_log(tweak_log(), "Successfully patched disableUpdateMask instruction at %p -> NOP", branch_addr);
+    bool processAware =
+        gUnseenProcessAwareUpdateMaskBypassEnabled && system_supports_process_aware_update_mask();
+    if (gUnseenProcessAwareUpdateMaskBypassEnabled && !processAware) {
+        os_log_info(tweak_log(), "Process-aware update-mask bypass is limited to iOS 16 and later; using original path");
+    }
+
+    void *allowed_in_update = resolve_allowed_in_update();
+    if (allowed_in_update) {
+        AllowedUpdateCallsite callsite = {0};
+        if (find_allowed_update_callsite(prepare_layer0, allowed_in_update, &callsite)) {
+            if (processAware) {
+                if (!install_scoped_allowed_in_update_hook(allowed_in_update, &callsite)) {
+                    // Never fall back to the unconditional patch when the user
+                    // requested System UI protection.
+                    os_log_error(tweak_log(), "Scoped update-mask hook unavailable - leaving QuartzCore unchanged");
+                }
+            } else {
+                patch_update_mask_instruction_to_nop((void *)callsite.clearStore,
+                                                     "allowed_in_update clear-store");
+            }
+            return;
+        }
+
+        // iOS 16 exports allowed_in_update but prepare_layer0 still uses the
+        // older direct TST/B.NE sequence. Continue to the legacy matcher only
+        // when no modern callsite exists.
+        os_log_info(tweak_log(), "No prepare_layer0 allowed_in_update callsite; trying legacy pattern");
+    }
+
+    LegacyUpdateCallsite legacyCallsite = {0};
+    if (!find_legacy_update_callsite(prepare_layer0, &legacyCallsite)) {
+        os_log_error(tweak_log(), "Legacy patch target not found - aborting");
+        return;
+    }
+
+    if (processAware) {
+        if (!install_legacy_process_aware_update_mask(&legacyCallsite)) {
+            os_log_error(tweak_log(),
+                         "Process-aware legacy update-mask path unavailable - leaving QuartzCore unchanged");
+        }
     } else {
-        os_log_error(tweak_log(), "DobbyCodePatch failed at %p (ret=%d)", branch_addr, ret);
+        patch_update_mask_instruction_to_nop((void *)legacyCallsite.branch, "legacy B.NE");
     }
 }
 
